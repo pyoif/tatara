@@ -2,10 +2,9 @@ package com.openedge.tatara
 
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
-import org.gradle.api.tasks.CacheableTask
-import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
+import org.gradle.api.tasks.UntrackedTask
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -13,31 +12,29 @@ import java.net.URI
 
 /**
  * Downloads latest PCT.jar from Riverside-Software GitHub Releases.
- * Caches at `~/.gradle/caches/tatara/pct/PCT.jar`.
+ * Caches globally at `~/.gradle/caches/tatara/pct/PCT.jar`.
+ * Skipped when file already cached.
  */
-@CacheableTask
+@UntrackedTask(because = "Downloads to shared Gradle cache outside project directory")
 abstract class SetupPctTask : DefaultTask() {
 
-    @get:Input
-    val downloadUrl: String =
-        "https://github.com/Riverside-Software/pct/releases/latest/download/PCT.jar"
+    @get:Internal
+    val pctJar: File = File(cacheDir, "PCT.jar")
 
-    @get:OutputFile
-    val pctJar: File
-        get() = project.layout.buildDirectory.dir("tatara/pct").get().asFile.resolve("PCT.jar")
+    init {
+        onlyIf {
+            !pctJar.exists() || pctJar.length() == 0L
+        }
+        outputs.upToDateWhen { pctJar.exists() && pctJar.length() > 0 }
+    }
 
     @TaskAction
     fun download() {
-        val dest = pctJar
-        dest.parentFile.mkdirs()
-
-        if (dest.exists() && dest.length() > 0) {
-            logger.lifecycle("PCT already cached: ${dest.absolutePath}")
-            return
-        }
-
+        pctJar.parentFile.mkdirs()
         logger.lifecycle("Downloading latest PCT from Riverside-Software...")
-        val conn = URI(downloadUrl).toURL().openConnection() as HttpURLConnection
+
+        val url = "https://github.com/Riverside-Software/pct/releases/latest/download/PCT.jar"
+        val conn = URI(url).toURL().openConnection() as HttpURLConnection
         conn.connectTimeout = 30_000
         conn.readTimeout = 300_000
         conn.instanceFollowRedirects = true
@@ -48,8 +45,16 @@ abstract class SetupPctTask : DefaultTask() {
             throw GradleException("Failed to download PCT: HTTP ${conn.responseCode}")
         }
 
-        FileOutputStream(dest).use { out -> conn.inputStream.copyTo(out) }
+        FileOutputStream(pctJar).use { out -> conn.inputStream.copyTo(out) }
         conn.disconnect()
-        logger.lifecycle("PCT downloaded to ${dest.absolutePath}")
+        logger.lifecycle("PCT downloaded to ${pctJar.absolutePath}")
+    }
+
+    companion object {
+        val cacheDir: File by lazy {
+            val home = System.getenv("GRADLE_USER_HOME")
+                ?: "${System.getProperty("user.home")}/.gradle"
+            File(home, "caches/tatara/pct")
+        }
     }
 }
