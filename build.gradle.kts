@@ -4,7 +4,7 @@ plugins {
     `maven-publish`
 }
 
-group = "com.hiyurigi"
+group = "com.pyoif"
 version = "1.0.0"
 
 repositories {
@@ -19,8 +19,8 @@ dependencies {
 gradlePlugin {
     plugins {
         register("tatara") {
-            id = "com.hiyurigi.tatara"
-            implementationClass = "com.hiyurigi.tatara.TataraPlugin"
+            id = "com.pyoif.tatara"
+            implementationClass = "com.pyoif.tatara.TataraPlugin"
         }
     }
 }

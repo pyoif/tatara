@@ -1,4 +1,4 @@
-package com.hiyurigi.tatara
+package com.pyoif.tatara
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
