@@ -1,4 +1,4 @@
-package com.openedge.tatara
+package com.hiyurigi.tatara
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project

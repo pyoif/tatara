@@ -4,7 +4,7 @@ plugins {
     `maven-publish`
 }
 
-group = "com.openedge"
+group = "com.hiyurigi"
 version = "1.0.0"
 
 repositories {
@@ -19,8 +19,8 @@ dependencies {
 gradlePlugin {
     plugins {
         register("tatara") {
-            id = "com.openedge.tatara"
-            implementationClass = "com.openedge.tatara.TataraPlugin"
+            id = "com.hiyurigi.tatara"
+            implementationClass = "com.hiyurigi.tatara.TataraPlugin"
         }
     }
 }

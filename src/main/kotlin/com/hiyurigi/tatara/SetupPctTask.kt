@@ -1,4 +1,4 @@
-package com.openedge.tatara
+package com.hiyurigi.tatara
 
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
