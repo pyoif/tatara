@@ -14,7 +14,6 @@ repositories {
 
 dependencies {
     implementation(gradleApi())
-    implementation("progress.openedge.abl-base:progress.openedge.abl-base.gradle.plugin:2.4.0")
 }
 
 gradlePlugin {

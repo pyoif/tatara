@@ -1,27 +1,30 @@
 package com.openedge.tatara
 
-import com.progress.gradle.abl.config.DbConnectionOptions
-import com.progress.gradle.abl.tasks.ABLCompile
+import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
-import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
 import org.gradle.work.DisableCachingByDefault
+import org.gradle.kotlin.dsl.withGroovyBuilder
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URI
 
 /**
- * Compiles ABL source to r-code using OpenEdge DevOps Framework (OEDF).
+ * Compiles ABL source to r-code using PCT (Progress Compiler Toolkit).
  *
- * Extends OEDF's native [ABLCompile] task. Input properties are
- * declared as abstract Gradle properties for consumer wiring;
- * the overridden [compile] method resolves them lazily and
- * delegates to the OEDF compiler.
+ * Downloads latest PCT.jar from Riverside-Software GitHub Releases on first run
+ * and caches it at `~/.gradle/caches/tatara/pct/PCT.jar`.
  */
-@DisableCachingByDefault(because = "Calls OpenEdge AVM binary; not cacheable across machines")
-abstract class OeCompileTask : ABLCompile() {
+@DisableCachingByDefault(because = "Calls native AVM binary via ANT; not cacheable")
+abstract class OeCompileTask : DefaultTask() {
 
     @get:PathSensitive(PathSensitivity.RELATIVE)
     @get:InputDirectory
@@ -31,97 +34,100 @@ abstract class OeCompileTask : ABLCompile() {
     @get:InputDirectory
     abstract val generatedDir: DirectoryProperty
 
+    @get:OutputDirectory
+    abstract val rcodeDir: DirectoryProperty
+
     @get:Input
-    abstract val oeDlcHome: Property<String>
+    abstract val dlcHome: Property<String>
 
     @get:Input
     abstract val paramFile: Property<String>
 
-    @get:Internal
-    abstract val outputRcodeDir: DirectoryProperty
-
-    override fun compile(): Any? {
-        val dlc = oeDlcHome.get()
-        val pfPath = paramFile.get()
-
-        // 1. R-code output directory (wired into parent's String-based setter)
-        setRcodeDir(outputRcodeDir.get().asFile.absolutePath)
-
-        // 2. DLC home
-        setDlcHome(dlc)
-
-        // 2. Propath: source dirs + OE framework libraries
-        propath(
-            srcDir.get().asFile.absolutePath,
-            generatedDir.get().asFile.absolutePath,
-            "$dlc/tty/netlib/OpenEdge.Net.pl",
-            "$dlc/tty/OpenEdge.Core.pl",
-            "$dlc/tty"
-        )
-
-        // 3. Source files (SourceTask API)
-        // include patterns apply to all source roots; generatedDir only has .cls
-        // so **/*.p and **/*.w won't match anything there. Result is equivalent
-        // to the old per-directory fileset approach.
-        setSource(listOf(srcDir.get().asFile, generatedDir.get().asFile))
-        include("**/*.p", "**/*.cls", "**/*.w")
-
-        // 4. Database connections
-        val pfFile = File(pfPath)
-        if (pfFile.exists()) {
-            val dbs = parsePfFile(pfFile)
-            if (dbs.isNotEmpty()) {
-                dbs.forEach { db ->
-                    val conn = DbConnectionOptions()
-                    conn.parameterFile = pfFile.absolutePath
-                    conn.dbName = db["name"] ?: ""
-                    conn.host = db["host"] ?: ""
-                    conn.port = db["port"] ?: ""
-                    conn.username = db["user"] ?: ""
-                    conn.password = db["pass"] ?: ""
-                    dbConnections.add(conn)
-                }
-            } else {
-                val conn = DbConnectionOptions()
-                conn.parameterFile = pfFile.absolutePath
-                dbConnections.add(conn)
-            }
-        }
-
-        // 5. Delegate to OEDF compiler
-        return super.compile()
+    companion object {
+        private const val PCT_DOWNLOAD_URL =
+            "https://github.com/Riverside-Software/pct/releases/latest/download/PCT.jar"
     }
 
-    private fun parsePfFile(pfFile: File): List<Map<String, String>> {
-        val connections = mutableListOf<Map<String, String>>()
-        val tokens = pfFile.readText().split(Regex("\\s+")).filter { it.isNotBlank() }
-        var i = 0
-        var current = mutableMapOf<String, String>()
+    @TaskAction
+    fun compile() {
+        val outDir = rcodeDir.get().asFile
+        outDir.mkdirs()
 
-        fun flush() {
-            if (current.containsKey("name")) {
-                connections.add(current.toMap())
-            }
-            current = mutableMapOf()
-        }
+        val srcPath = srcDir.get().asFile.absolutePath
+        val genPath = generatedDir.get().asFile.absolutePath
+        val dlc = dlcHome.get()
 
-        while (i < tokens.size) {
-            val token = tokens[i]
-            when {
-                token == "-db" && i + 1 < tokens.size -> {
-                    flush()
-                    current["name"] = tokens[++i]
+        val pctJar = resolvePct()
+
+        ant.withGroovyBuilder {
+            "taskdef"("resource" to "PCT.properties", "classpath" to pctJar, "loaderRef" to "pct")
+            "typedef"("resource" to "types.properties", "classpath" to pctJar, "loaderRef" to "pct")
+
+            "PCTCompile"(
+                "destDir" to outDir.absolutePath,
+                "dlcHome" to dlc,
+                "paramFile" to paramFile.get()
+            ) {
+                "propath" {
+                    "pathelement"("location" to srcPath)
+                    "pathelement"("location" to genPath)
+                    "pathelement"("location" to "$dlc/tty/netlib/OpenEdge.Net.pl")
+                    "pathelement"("location" to "$dlc/tty/OpenEdge.Core.pl")
+                    "pathelement"("location" to "$dlc/tty")
                 }
-                token == "-d" && i + 1 < tokens.size -> i++
-                token == "-H" && i + 1 < tokens.size -> current["host"] = tokens[++i]
-                token == "-S" && i + 1 < tokens.size -> current["port"] = tokens[++i]
-                token == "-N" && i + 1 < tokens.size -> current["transport"] = tokens[++i]
-                token == "-U" && i + 1 < tokens.size -> current["user"] = tokens[++i]
-                token == "-P" && i + 1 < tokens.size -> current["pass"] = tokens[++i]
+
+                "fileset"("dir" to srcPath) {
+                    "include"("name" to "**/*.p")
+                    "include"("name" to "**/*.cls")
+                    "include"("name" to "**/*.w")
+                }
+
+                "fileset"("dir" to genPath) {
+                    "include"("name" to "**/*.cls")
+                }
             }
-            i++
         }
-        flush()
-        return connections
+    }
+
+    // ---- PCT download & cache ----
+
+    private fun resolvePct(): String {
+        val cacheDir = File(getGradleCacheHome(), "tatara/pct")
+        cacheDir.mkdirs()
+        val cacheFile = File(cacheDir, "PCT.jar")
+
+        // Check if file exists and is valid (non-empty jar)
+        if (cacheFile.exists() && cacheFile.length() > 0) {
+            logger.lifecycle("Using cached PCT: ${cacheFile.absolutePath}")
+            return cacheFile.absolutePath
+        }
+
+        logger.lifecycle("Downloading latest PCT from Riverside-Software...")
+        downloadFile(PCT_DOWNLOAD_URL, cacheFile)
+        logger.lifecycle("PCT downloaded to ${cacheFile.absolutePath}")
+
+        return cacheFile.absolutePath
+    }
+
+    private fun downloadFile(urlStr: String, dest: File) {
+        val conn = URI(urlStr).toURL().openConnection() as HttpURLConnection
+        conn.connectTimeout = 30_000
+        conn.readTimeout = 300_000
+        conn.instanceFollowRedirects = true
+        conn.connect()
+
+        if (conn.responseCode !in 200..299) {
+            conn.disconnect()
+            throw GradleException("Failed to download PCT: HTTP ${conn.responseCode} from $urlStr")
+        }
+
+        dest.parentFile.mkdirs()
+        FileOutputStream(dest).use { out -> conn.inputStream.copyTo(out) }
+        conn.disconnect()
+    }
+
+    private fun getGradleCacheHome(): File {
+        val env = System.getenv("GRADLE_USER_HOME")
+        return if (env != null) File(env) else File(System.getProperty("user.home"), ".gradle")
     }
 }
