@@ -13,14 +13,12 @@ import org.gradle.work.DisableCachingByDefault
 import org.gradle.work.InputChanges
 import org.gradle.work.Incremental
 import java.io.File
-import java.io.OutputStream
 
 /**
- * Prepends ABL package prefixes to CLASS/INTERFACE declarations,
- * and extracts bundled [Tatara.Api] runtime sources from the plugin
- * classpath into the output directory.
+ * Prepends ABL package prefixes to CLASS/INTERFACE declarations by reading
+ * only the file header until the first declaration is found (or END OF FILE).
  *
- * Uses [InputChanges] so only changed/added/removed files are processed.
+ * Also extracts bundled [Tatara.Api] runtime sources into [outputDir].
  */
 @DisableCachingByDefault(because = "Writes files to output directory, incremental via InputChanges")
 abstract class PrependPackageTask : DefaultTask() {
@@ -33,7 +31,7 @@ abstract class PrependPackageTask : DefaultTask() {
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
 
-    private val declLineRegex = Regex("""^\s*(CLASS|INTERFACE)\s+([\w.]+)""")
+    private val declRegex = Regex("""^\s*(CLASS|INTERFACE)\s+([\w.]+)""")
 
     @TaskAction
     fun prepend(inputChanges: InputChanges) {
@@ -41,8 +39,6 @@ abstract class PrependPackageTask : DefaultTask() {
         val outRoot = outputDir.get().asFile
         var filesChanged = 0
 
-        // Extract bundled Tatara.Api runtime classes (idempotent — overwrites each run
-        // so updates to the plugin jars are picked up automatically).
         extractBundledApi(outRoot)
 
         inputChanges.getFileChanges(srcDir).forEach { change ->
@@ -53,37 +49,17 @@ abstract class PrependPackageTask : DefaultTask() {
 
             when (change.changeType) {
                 ChangeType.REMOVED -> {
-                    if (outFile.delete()) {
-                        logger.lifecycle("  removed: $relative")
-                    }
+                    if (outFile.delete()) logger.lifecycle("  removed: $relative")
                 }
                 ChangeType.ADDED, ChangeType.MODIFIED -> {
                     outFile.parentFile.mkdirs()
                     val prefix = computePrefix(change.file, root)
-                    val source = change.file.readText()
 
-                    var newContent: String
-                    if (prefix.isEmpty()) {
-                        newContent = source
-                    } else {
-                        newContent = prependDeclarations(source, prefix)
-                    }
-
-                    // Avoid touching the output file if content is unchanged
-                    // (preserves file timestamps for downstream incremental tasks).
-                    if (newContent == source) {
-                        // Source unchanged; only copy if outFile missing or different
-                        val existing = if (outFile.exists()) outFile.readText() else null
-                        if (existing != source) {
-                            outFile.writeText(source)
-                            filesChanged++
-                        }
-                    } else {
-                        val existing = if (outFile.exists()) outFile.readText() else null
-                        if (existing != newContent) {
-                            outFile.writeText(newContent)
-                            filesChanged++
-                        }
+                    val result = prependPrefix(change.file, prefix)
+                    val existing = if (outFile.exists()) outFile.readText() else null
+                    if (result != existing) {
+                        outFile.writeText(result)
+                        filesChanged++
                     }
                 }
             }
@@ -95,50 +71,63 @@ abstract class PrependPackageTask : DefaultTask() {
     }
 
     /**
-     * Performs a single-pass replacement on the first CLASS/INTERFACE line
-     * that does not already carry the prefix.  Scans byte-by-byte instead of
-     * splitting the source into lines, so large files cost less.
+     * Reads [sourceFile] line-by-line, stops as soon as the CLASS/INTERFACE
+     * declaration is found (or rewritten with prefix).  Never reads past that
+     * point; for deep files the cost is O(distance-to-declaration) instead of
+     * O(file-size).
      */
-    private fun prependDeclarations(source: String, prefix: String): String {
-        var i = 0
-        val len = source.length
+    private fun prependPrefix(sourceFile: File, prefix: String): String {
+        val buf = sourceFile.bufferedReader()
+        val out = StringBuilder()
 
-        while (i < len) {
-            val ch = source[i]
-            when {
-                ch == '\n' || ch == '\r' -> {
-                    i++
-                    continue
-                }
-                ch.isWhitespace() -> {
-                    i++
-                    continue
-                }
-                source.regionMatches(i, "CLASS", 0, 5, ignoreCase = true)
-                    || source.regionMatches(i, "INTERFACE", 0, 9, ignoreCase = true) -> {
-
-                    val keywordEnd = if (source.regionMatches(i, "INTERFACE", 0, 9, ignoreCase = true)) i + 9 else i + 5
-                    // Skip whitespace after keyword
-                    var j = keywordEnd
-                    while (j < len && source[j].isWhitespace()) j++
-                    // Read the class / interface name
-                    val nameStart = j
-                    while (j < len && (source[j].isJavaIdentifierPart() || source[j] == '.')) j++
-                    val name = source.substring(nameStart, j)
-
-                    if (name.startsWith(prefix)) return source // already prefixed
-
-                    val indent = source.substring(0, i)
-                    val rest = source.substring(j)
-                    return indent + source.substring(i, keywordEnd) + " $prefix.$name" + rest
-                }
-                else -> {
-                    // Hit a non-whitespace token that isn't CLASS/INTERFACE — skip to next line
-                    while (i < len && source[i] != '\n' && source[i] != '\r') i++
+        try {
+            var done = false
+            buf.forEachLine { line ->
+                if (!done) {
+                    val match = declRegex.find(line)
+                    if (match != null) {
+                        val keyword = match.groupValues[1]
+                        val name = match.groupValues[2]
+                        if (!prefix.isEmpty() && !name.startsWith(prefix)) {
+                            val indent = line.substring(0, match.range.first)
+                            val rest = line.substring(match.range.last + 1)
+                            out.append(indent).append(keyword)
+                                .append(" ").append(prefix).append(".").append(name)
+                                .append(rest).append("\r\n")
+                        } else {
+                            out.append(line).append("\r\n")
+                        }
+                        done = true  // short-circuit: CLASS/INTERFACE found, stream rest raw
+                    } else if (line.isBlank() || line.trimStart().startsWith("/*") || line.trimStart().startsWith("//")) {
+                        // Comments, blank lines, USING statements in header — pass through
+                        out.append(line).append("\r\n")
+                    } else {
+                        // Non-comment non-blank non-CLASS/INTERFACE line before declaration
+                        // (could be annotations, USING, etc.) — still in header zone
+                        out.append(line).append("\r\n")
+                        // Only short-circuit on CLASS/INTERFACE or true "body" start.
+                        // Heuristic: if this line starts with a keyword like METHOD, DEFINE, etc.
+                        // we treat it as "no CLASS found" and stop searching.
+                        val trimmed = line.trimStart().take(8).uppercase()
+                        when {
+                            trimmed.startsWith("METHOD") ||
+                            trimmed.startsWith("DEFINE") ||
+                            trimmed.startsWith("CONSTRUC") ||
+                            trimmed.startsWith("DESTRUCT") ||
+                            trimmed.startsWith("FUNCTION") ||
+                            trimmed.startsWith("PROCEDUR") -> done = true
+                        }
+                    }
+                } else {
+                    // Past declaration — stream remainder unchanged
+                    out.append(line).append("\r\n")
                 }
             }
+        } finally {
+            buf.close()
         }
-        return source // no CLASS/INTERFACE found
+
+        return out.toString()
     }
 
     private fun computePrefix(file: File, root: File): String {
