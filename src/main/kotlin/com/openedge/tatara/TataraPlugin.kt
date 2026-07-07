@@ -16,5 +16,10 @@ class TataraPlugin : Plugin<Project> {
             dependsOn(setupPct)
             pctJarPath.convention(setupPct.map { it.pctJar.absolutePath })
         }
+
+        // setupPct must run before everything else in the pipeline.
+        project.tasks.withType(PrependPackageTask::class.java).configureEach {
+            dependsOn(setupPct)
+        }
     }
 }
