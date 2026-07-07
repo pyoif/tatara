@@ -6,6 +6,7 @@ import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.work.DisableCachingByDefault
@@ -36,11 +37,17 @@ abstract class OeCompileTask : ABLCompile() {
     @get:Input
     abstract val paramFile: Property<String>
 
+    @get:OutputDirectory
+    abstract val rcodeDir: DirectoryProperty
+
     override fun compile(): Any? {
         val dlc = dlcHome.get()
         val pfPath = paramFile.get()
 
-        // 1. DLC home
+        // 1. R-code output directory (wired into parent's String-based setter)
+        setRcodeDir(rcodeDir.get().asFile.absolutePath)
+
+        // 2. DLC home
         setDlcHome(dlc)
 
         // 2. Propath: source dirs + OE framework libraries
