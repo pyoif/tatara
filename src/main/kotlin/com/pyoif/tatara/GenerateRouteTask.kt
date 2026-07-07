@@ -61,10 +61,6 @@ abstract class GenerateRoutesTask : DefaultTask() {
         val cacheFile = cacheDir.file("routeCache.txt").get().asFile
         outDir.mkdirs()
 
-        // Extract bundled common ABL runtime classes into output so shims can
-        // reference Tatara.Api.RequestContext etc. without user setup.
-        extractBundledCommon(outDir)
-
         val previousRoutesByFile = loadStateCache(cacheFile)
         val currentRoutesByFile = mutableMapOf<String, List<RouteDef>>()
         val dirtyRoutes = mutableSetOf<String>()
@@ -295,43 +291,5 @@ abstract class GenerateRoutesTask : DefaultTask() {
         outFile.parentFile.mkdirs()
         outFile.writeText(sb.toString())
         logger.lifecycle("Wrote handlers file: ${outFile.absolutePath} [${routes.size} route(s)]")
-    }
-
-    /**
-     * Copies bundled common ABL runtime sources from the plugin classpath
-     * into the output directory so generated shims can reference
-     * Tatara.Api.RequestContext etc. without the user having to provide them.
-     */
-    private fun extractBundledCommon(outDir: File) {
-        val resourceDir = "Tatara/Api"
-        val resourceUrl = javaClass.classLoader.getResource(resourceDir)
-            ?: return  // No bundled Tatara.Api — user provides their own
-
-        val uri = resourceUrl.toURI()
-        val apiOut = File(outDir, "Tatara/Api")
-        apiOut.mkdirs()
-
-        if (uri.scheme == "jar") {
-            java.nio.file.FileSystems.newFileSystem(uri, emptyMap<String, Any>()).use { fs ->
-                val root = fs.getPath("/$resourceDir")
-                java.nio.file.Files.walk(root)
-                    .filter { java.nio.file.Files.isRegularFile(it) }
-                    .forEach { source ->
-                        val rel = "/$resourceDir/" + root.relativize(source).toString().replace("\\", "/")
-                        val targetStream = javaClass.classLoader.getResourceAsStream(rel.substring(1))
-                        val targetFile = File(apiOut, root.relativize(source).toString())
-                        targetFile.parentFile.mkdirs()
-                        targetStream?.use { input -> targetFile.outputStream().use { out -> input.copyTo(out) } }
-                    }
-            }
-        } else {
-            val root = java.io.File(uri)
-            root.walkTopDown().filter { it.isFile }.forEach { source ->
-                val rel = source.relativeTo(root)
-                val target = File(apiOut, rel.path)
-                target.parentFile.mkdirs()
-                source.copyTo(target, overwrite = true)
-            }
-        }
     }
 }
