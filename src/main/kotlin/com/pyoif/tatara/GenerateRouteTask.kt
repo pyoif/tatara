@@ -206,17 +206,31 @@ abstract class GenerateRoutesTask : DefaultTask() {
 
     private fun writeShim(routePath: String, routes: List<RouteDef>, outDir: File, template: String) {
         val methodHandlersBlock = StringBuilder()
+        val usingSet = mutableSetOf<String>()
+        val firstClassName = routes.firstOrNull()?.className ?: ""
+        usingSet.add(firstClassName)
 
         routes.forEachIndexed { index, def ->
             val handleName = "Handle" + def.httpMethod.lowercase().replaceFirstChar { it.uppercase() }
             if (index > 0) methodHandlersBlock.append("\r\n\r\n")
+
+            // Declare controller with exact type — no DYNAMIC-INVOKE, no reflection.
+            val controllerVar = "ctrl${index}"
+            val ctrlClassName = def.className
+            val classNameOnly = ctrlClassName.substringAfterLast('.')
+            val ctrlType = if (ctrlClassName.contains('.')) ctrlClassName else classNameOnly
+
+            usingSet.add(ctrlClassName)
+
             methodHandlersBlock.append("\tMETHOD OVERRIDE PROTECTED INTEGER $handleName(INPUT poRequest AS OpenEdge.Web.IWebRequest):\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oContext    AS Tatara.Api.RequestContext  NO-UNDO.\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse   AS Tatara.Api.ResponseContext NO-UNDO.\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oController AS Progress.Lang.Object   NO-UNDO.\r\n")
+            methodHandlersBlock.append("\t\tDEFINE VARIABLE oContext  AS Tatara.Api.RequestContext  NO-UNDO.\r\n")
+            methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse AS Tatara.Api.ResponseContext NO-UNDO.\r\n")
+            if (index == 0 || def.className != routes[0].className) {
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE $controllerVar AS $ctrlType NO-UNDO.\r\n")
+            }
             val sz = if (def.pathParams.isEmpty()) 0 else def.pathParams.size
             if (sz > 0) {
-                methodHandlersBlock.append("\t\tDEFINE VARIABLE cParams     AS CHARACTER EXTENT $sz NO-UNDO.\r\n")
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE cParams   AS CHARACTER EXTENT $sz NO-UNDO.\r\n")
             }
             methodHandlersBlock.append("\r\n")
             if (sz > 0) {
@@ -227,10 +241,10 @@ abstract class GenerateRoutesTask : DefaultTask() {
             } else {
                 methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest).\r\n")
             }
-            methodHandlersBlock.append("\t\toResponse   = NEW Tatara.Api.ResponseContext().\r\n")
-            methodHandlersBlock.append("\t\toController = NEW ${def.className}().\r\n")
+            methodHandlersBlock.append("\t\toResponse = NEW Tatara.Api.ResponseContext().\r\n")
+            methodHandlersBlock.append("\t\t$controllerVar = NEW $ctrlType().\r\n")
             methodHandlersBlock.append("\r\n")
-            methodHandlersBlock.append("\t\tDYNAMIC-INVOKE(oController, '${def.ablMethod}', oContext, oResponse).\r\n")
+            methodHandlersBlock.append("\t\t$controllerVar:${def.ablMethod}(INPUT oContext, INPUT oResponse).\r\n")
             methodHandlersBlock.append("\r\n")
             methodHandlersBlock.append("\t\tTatara.Api.ResponseWriter:Write(poRequest, oResponse).\r\n")
             methodHandlersBlock.append("\r\n")
@@ -238,9 +252,13 @@ abstract class GenerateRoutesTask : DefaultTask() {
             methodHandlersBlock.append("\tEND METHOD.")
         }
 
+        // Build USING block
+        val usingBlock = usingSet.joinToString("\r\n") { "USING $it." }
+
         val shimClassName = pathSanitize(routePath).replace("/", ".")
         val fileContent = template
             .replace("{{SHIM_CLASS_NAME}}", shimClassName)
+            .replace("{{USING_BLOCK}}", usingBlock)
             .replace("{{METHOD_HANDLERS}}", methodHandlersBlock.toString())
 
         // Write to <outDir>/<sanitized-path>.cls — strip {param} from filesystem path.
