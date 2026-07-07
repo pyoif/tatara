@@ -61,6 +61,10 @@ abstract class GenerateRoutesTask : DefaultTask() {
         val cacheFile = cacheDir.file("routeCache.txt").get().asFile
         outDir.mkdirs()
 
+        // Extract bundled common ABL runtime classes into output so shims can
+        // reference Tatara.Api.RequestContext etc. without user setup.
+        extractBundledCommon(outDir)
+
         val previousRoutesByFile = loadStateCache(cacheFile)
         val currentRoutesByFile = mutableMapOf<String, List<RouteDef>>()
         val dirtyRoutes = mutableSetOf<String>()
@@ -211,8 +215,8 @@ abstract class GenerateRoutesTask : DefaultTask() {
             val handleName = "Handle" + def.httpMethod.lowercase().replaceFirstChar { it.uppercase() }
             if (index > 0) methodHandlersBlock.append("\r\n\r\n")
             methodHandlersBlock.append("\tMETHOD OVERRIDE PROTECTED INTEGER $handleName(INPUT poRequest AS OpenEdge.Web.IWebRequest):\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oContext    AS common.RequestContext  NO-UNDO.\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse   AS common.ResponseContext NO-UNDO.\r\n")
+            methodHandlersBlock.append("\t\tDEFINE VARIABLE oContext    AS Tatara.Api.RequestContext  NO-UNDO.\r\n")
+            methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse   AS Tatara.Api.ResponseContext NO-UNDO.\r\n")
             methodHandlersBlock.append("\t\tDEFINE VARIABLE oController AS Progress.Lang.Object   NO-UNDO.\r\n")
             val sz = if (def.pathParams.isEmpty()) 0 else def.pathParams.size
             if (sz > 0) {
@@ -223,16 +227,16 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 def.pathParams.forEachIndexed { i, name ->
                     methodHandlersBlock.append("\t\tcParams[${i + 1}] = \"$name\".\r\n")
                 }
-                methodHandlersBlock.append("\t\toContext = common.RequestContextBuilder:FromWebRequest(poRequest, cParams).\r\n")
+                methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest, cParams).\r\n")
             } else {
-                methodHandlersBlock.append("\t\toContext = common.RequestContextBuilder:FromWebRequest(poRequest).\r\n")
+                methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest).\r\n")
             }
-            methodHandlersBlock.append("\t\toResponse   = NEW common.ResponseContext().\r\n")
+            methodHandlersBlock.append("\t\toResponse   = NEW Tatara.Api.ResponseContext().\r\n")
             methodHandlersBlock.append("\t\toController = NEW ${def.className}().\r\n")
             methodHandlersBlock.append("\r\n")
             methodHandlersBlock.append("\t\tDYNAMIC-INVOKE(oController, '${def.ablMethod}', oContext, oResponse).\r\n")
             methodHandlersBlock.append("\r\n")
-            methodHandlersBlock.append("\t\tcommon.ResponseWriter:Write(poRequest, oResponse).\r\n")
+            methodHandlersBlock.append("\t\tTatara.Api.ResponseWriter:Write(poRequest, oResponse).\r\n")
             methodHandlersBlock.append("\r\n")
             methodHandlersBlock.append("\t\tRETURN 0.\r\n")
             methodHandlersBlock.append("\tEND METHOD.")
@@ -291,5 +295,43 @@ abstract class GenerateRoutesTask : DefaultTask() {
         outFile.parentFile.mkdirs()
         outFile.writeText(sb.toString())
         logger.lifecycle("Wrote handlers file: ${outFile.absolutePath} [${routes.size} route(s)]")
+    }
+
+    /**
+     * Copies bundled common ABL runtime sources from the plugin classpath
+     * into the output directory so generated shims can reference
+     * Tatara.Api.RequestContext etc. without the user having to provide them.
+     */
+    private fun extractBundledCommon(outDir: File) {
+        val resourceDir = "Tatara/Api"
+        val resourceUrl = javaClass.classLoader.getResource(resourceDir)
+            ?: return  // No bundled Tatara.Api — user provides their own
+
+        val uri = resourceUrl.toURI()
+        val apiOut = File(outDir, "Tatara/Api")
+        apiOut.mkdirs()
+
+        if (uri.scheme == "jar") {
+            java.nio.file.FileSystems.newFileSystem(uri, emptyMap<String, Any>()).use { fs ->
+                val root = fs.getPath("/$resourceDir")
+                java.nio.file.Files.walk(root)
+                    .filter { java.nio.file.Files.isRegularFile(it) }
+                    .forEach { source ->
+                        val rel = "/$resourceDir/" + root.relativize(source).toString().replace("\\", "/")
+                        val targetStream = javaClass.classLoader.getResourceAsStream(rel.substring(1))
+                        val targetFile = File(apiOut, root.relativize(source).toString())
+                        targetFile.parentFile.mkdirs()
+                        targetStream?.use { input -> targetFile.outputStream().use { out -> input.copyTo(out) } }
+                    }
+            }
+        } else {
+            val root = java.io.File(uri)
+            root.walkTopDown().filter { it.isFile }.forEach { source ->
+                val rel = source.relativeTo(root)
+                val target = File(apiOut, rel.path)
+                target.parentFile.mkdirs()
+                source.copyTo(target, overwrite = true)
+            }
+        }
     }
 }

@@ -2,6 +2,7 @@ USING Progress.Lang.*.
 USING OpenEdge.Web.WebResponseWriter.
 USING OpenEdge.Net.HTTP.StatusCodeEnum.
 USING OpenEdge.Web.WebHandler.
+USING Tatara.Api.*.
 
 BLOCK-LEVEL ON ERROR UNDO, THROW.
 
