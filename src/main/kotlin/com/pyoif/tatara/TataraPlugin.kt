@@ -2,24 +2,38 @@ package com.pyoif.tatara
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.api.tasks.Copy
 
 class TataraPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        // Register the PCT download task — consumers don't need to configure it.
         val setupPct = project.tasks.register("setupPct", SetupPctTask::class.java) {
             group = "tatara"
             description = "Downloads latest PCT.jar from GitHub Releases for ABL compilation."
         }
 
-        // Auto-wire: any OeCompileTask depends on setupPct and gets its jar path.
         project.tasks.withType(OeCompileTask::class.java).configureEach {
             dependsOn(setupPct)
             pctJarPath.convention(setupPct.map { it.pctJar.absolutePath })
         }
 
-        // setupPct must run before everything else in the pipeline.
         project.tasks.withType(PrependPackageTask::class.java).configureEach {
             dependsOn(setupPct)
+        }
+
+        project.tasks.register("generateOpenApi", GenerateOpenApiTask::class.java) {
+            group = "tatara"
+            description = "Generates OpenAPI 3.0 swagger.json from handler annotations and DTO classes"
+        }
+
+        val copySwaggerUi = project.tasks.register("copySwaggerUi", Copy::class.java) {
+            group = "tatara"
+            description = "Copies swagger/index.html to pasoeTemplate/docs/swagger/ for WAR bundling"
+            from(project.rootDir.resolve("swagger/index.html"))
+            into(project.layout.buildDirectory.dir("resources/main/pasoeTemplate/docs/swagger"))
+        }
+
+        project.tasks.withType(PackageWarTask::class.java).configureEach {
+            dependsOn(copySwaggerUi)
         }
     }
 }
