@@ -1,0 +1,10 @@
+CLASS Tatara.Api.ErrorResponse:
+
+    DEFINE PUBLIC PROPERTY error   AS CHARACTER NO-UNDO GET. SET.
+    DEFINE PUBLIC PROPERTY message AS CHARACTER NO-UNDO GET. SET.
+
+    CONSTRUCTOR PUBLIC ErrorResponse(INPUT pcMessage AS CHARACTER):
+        ASSIGN error = "" message = pcMessage.
+    END CONSTRUCTOR.
+
+END CLASS.
