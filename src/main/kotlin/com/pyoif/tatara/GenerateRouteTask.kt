@@ -57,6 +57,17 @@ abstract class GenerateRoutesTask : DefaultTask() {
         """(?i)^\s*METHOD\s+(?:PUBLIC|PROTECTED)\s+(?:\w+\s+)?(\w+)\s*[(]"""
     )
     private val pathParamRegex = Regex("""\{(\w+)\}""")
+    // @Response(code, Type) for non-200 error overrides. Group 1 = code, group 2 = type.
+    private val responseAnnotationRegex = Regex(
+        """@Response\(\s*(\d{3})\s*,\s*([\w.]+)\s*\)"""
+    )
+    // Full method signature: return type, method name, optional INPUT param type.
+    // "METHOD PUBLIC ReturnType Name(INPUT x AS Type):"
+    // "METHOD PUBLIC VOID Name():"
+    // Group 1 = return type (or "VOID"), group 2 = method name, group 3 = input type (optional)
+    private val methodSigRegex = Regex(
+        """(?i)^\s*METHOD\s+(?:PUBLIC|PROTECTED)\s+(\w+(?:\.\w+)*)\s+(\w+)\s*\(\s*(?:INPUT\s+\w+\s+AS\s+([\w.]+)\s*)?\)\s*[.:]"""
+    )
 
     @TaskAction
     fun execute(inputChanges: InputChanges) {
@@ -152,25 +163,56 @@ abstract class GenerateRoutesTask : DefaultTask() {
         var pendingVerb: String? = null
         var pendingPath: String? = null
         var pendingPathParams: List<String> = emptyList()
+        var pendingErrorResponses = mutableMapOf<Int, String>()
 
         file.forEachLine { line ->
+            // Collect @Response annotations before the method line
+            responseAnnotationRegex.find(line)?.let { m ->
+                pendingErrorResponses[m.groupValues[1].toInt()] = m.groupValues[2]
+            }
+            // @VERB annotation
             httpVerbRegex.find(line)?.let { m ->
                 pendingVerb = m.groupValues[1].uppercase()
                 pendingPath = m.groupValues[3].let { if (it.startsWith("/")) it.substring(1) else it }
                 pendingPathParams = pathParamRegex.findAll(m.groupValues[3]).map { it.groupValues[1] }.toList()
             }
+            // Full method signature: captures return type + INPUT type
+            methodSigRegex.find(line)?.let { m ->
+                if (pendingVerb != null && pendingPath != null) {
+                    val returnTypeRaw = m.groupValues[1]
+                    val methodName = m.groupValues[2]
+                    val inputType = m.groupValues.getOrNull(3)?.takeIf { it.isNotEmpty() }
+
+                    val reqDto = if (inputType != null && inputType != "Tatara.Api.RequestContext") inputType else null
+                    val respDto = if (returnTypeRaw.uppercase() == "VOID") null else returnTypeRaw
+
+                    if (results.none { it.routePath == pendingPath && it.httpMethod == pendingVerb }) {
+                        results.add(RouteDef(
+                            routePath = pendingPath!!,
+                            httpMethod = pendingVerb!!,
+                            className = className,
+                            ablMethod = methodName,
+                            pathParams = pendingPathParams,
+                            requestDtoClassName = reqDto,
+                            responseDtoClassName = respDto,
+                            errorResponses = pendingErrorResponses.toMap()
+                        ))
+                    }
+                }
+                pendingVerb = null; pendingPath = null
+                pendingPathParams = emptyList(); pendingErrorResponses = mutableMapOf()
+            }
+            // Fallback: old-style METHOD line (no return type, no INPUT type)
             methodDefRegex.find(line)?.let { m ->
                 if (pendingVerb != null && pendingPath != null) {
                     val ablMethod = m.groupValues[1]
                     if (results.none { it.routePath == pendingPath && it.httpMethod == pendingVerb }) {
-                        results.add(RouteDef(pendingPath!!, pendingVerb!!, className, ablMethod, pendingPathParams))
+                        results.add(RouteDef(pendingPath!!, pendingVerb!!, className, ablMethod, pendingPathParams,
+                            errorResponses = pendingErrorResponses.toMap()))
                     }
                 }
-                // Always clear on METHOD line, even if the route was incomplete, so a stray
-                // @VERB above a different method doesn't leak to the next one.
-                pendingVerb = null
-                pendingPath = null
-                pendingPathParams = emptyList()
+                pendingVerb = null; pendingPath = null
+                pendingPathParams = emptyList(); pendingErrorResponses = mutableMapOf()
             }
         }
         return results
