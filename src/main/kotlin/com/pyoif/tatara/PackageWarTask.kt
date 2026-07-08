@@ -4,6 +4,8 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -30,6 +32,11 @@ abstract class PackageWarTask : DefaultTask() {
     @get:PathSensitive(PathSensitivity.RELATIVE)
     @get:InputDirectory
     abstract val handlersDir: DirectoryProperty
+
+    @get:Optional
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val openApiSpec: RegularFileProperty
 
     @get:OutputFile
     abstract val warFile: RegularFileProperty
@@ -64,6 +71,15 @@ abstract class PackageWarTask : DefaultTask() {
                     val serviceName = file.nameWithoutExtension
                     val entryName = "WEB-INF/adapters/web/$serviceName/$serviceName.handlers"
                     addFileToZip(zip, file, entryName)
+                }
+            }
+
+            // 4. Bundle generated OpenAPI spec: swagger.json → api/swagger.json
+            if (openApiSpec.isPresent) {
+                val specFile = openApiSpec.get().asFile
+                if (specFile.exists()) {
+                    addFileToZip(zip, specFile, "api/swagger.json")
+                    logger.lifecycle("Bundled OpenAPI spec: api/swagger.json")
                 }
             }
         }

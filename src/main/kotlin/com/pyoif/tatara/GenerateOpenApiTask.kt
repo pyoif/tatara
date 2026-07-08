@@ -7,6 +7,8 @@ import com.google.gson.JsonParser
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
@@ -20,6 +22,10 @@ abstract class GenerateOpenApiTask : DefaultTask() {
 
     @get:PathSensitive(PathSensitivity.RELATIVE)
     @get:InputDirectory
+    abstract val generatedDir: DirectoryProperty
+
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    @get:InputDirectory
     abstract val packagedDir: DirectoryProperty
 
     @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -28,6 +34,12 @@ abstract class GenerateOpenApiTask : DefaultTask() {
 
     @get:OutputFile
     abstract val swaggerFile: RegularFileProperty
+
+    @get:Input
+    abstract val apiTitle: Property<String>
+
+    @get:Input
+    abstract val apiVersion: Property<String>
 
     private val typeMap = mapOf(
         "CHARACTER" to mapOf("type" to "string"),
@@ -40,21 +52,33 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         "INT64"     to mapOf<String,Any>("type" to "integer", "format" to "int64")
     )
 
-    private val httpVerbRegex = Regex("""(?i)@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\(\s*(["'])([^"']+)\2\s*\)""")
-    private val methodSigRegex = Regex(
-        """(?i)^\s*METHOD\s+(?:PUBLIC|PROTECTED)\s+(\w+(?:\.\w+)*)\s+(\w+)\s*\(\s*(?:INPUT\s+\w+\s+AS\s+([\w.]+)\s*)?\)\s*[.:]"""
-    )
-    private val responseRegex = Regex("""@Response\(\s*(\d{3})\s*,\s*([\w.]+)\s*\)""")
-    private val pathParamRegex = Regex("""\{(\w+)\}""")
-
     @TaskAction
     fun generate() {
+        val genRoot = generatedDir.get().asFile
         val pkgRoot = packagedDir.get().asFile
         val handlersRoot = handlersDir.get().asFile
         val gson = GsonBuilder().setPrettyPrinting().create()
+        val routeParser = RouteParser()
+
+        logger.lifecycle("GenerateOpenApiTask - generatedDir (shims): ${genRoot.absolutePath}")
+        logger.lifecycle("GenerateOpenApiTask - packagedDir (sources): ${pkgRoot.absolutePath}")
+        logger.lifecycle("GenerateOpenApiTask - handlersDir: ${handlersRoot.absolutePath}")
 
         val schemas = JsonObject()
-        collectDtoSchemas(pkgRoot, schemas)
+        val parameters = JsonObject()
+        val paths = JsonObject()
+        val handlersFiles = handlersRoot.walkTopDown().filter { it.isFile && it.extension == "handlers" }.toList()
+        val responseDtoClasses = mutableSetOf<String>()
+
+        // First pass: collect response DTOs only (request DTOs will be processed per-route based on HTTP method)
+        handlersFiles.forEach { handlersFile ->
+            collectResponseDtosFromHandlers(handlersFile, genRoot, pkgRoot, responseDtoClasses, routeParser)
+        }
+
+        // Add all response DTOs to schemas
+        responseDtoClasses.forEach { dtoClass ->
+            addDtoToSchemas(dtoClass, pkgRoot, schemas)
+        }
 
         schemas.add("ErrorResponse", JsonObject().apply {
             addProperty("type", "object")
@@ -64,24 +88,25 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             })
         })
 
-        val paths = JsonObject()
-        val handlersFiles = handlersRoot.walkTopDown().filter { it.isFile && it.extension == "handlers" }.toList()
-
+        // Second pass: build paths
         handlersFiles.forEach { handlersFile ->
-            buildPathsFromHandlers(handlersFile, pkgRoot, paths, schemas)
+            buildPathsFromHandlers(handlersFile, genRoot, pkgRoot, paths, schemas, parameters, routeParser)
         }
 
         val swagger = JsonObject().apply {
             addProperty("openapi", "3.0.3")
             add("info", JsonObject().apply {
-                addProperty("title", project.name)
-                addProperty("version", project.version.toString())
+                addProperty("title", apiTitle.get())
+                addProperty("version", apiVersion.get())
             })
             add("servers", JsonArray().apply {
                 add(JsonObject().apply { addProperty("url", "/api") })
             })
             add("paths", paths)
-            add("components", JsonObject().apply { add("schemas", schemas) })
+            add("components", JsonObject().apply {
+                add("schemas", schemas)
+                if (parameters.size() > 0) add("parameters", parameters)
+            })
         }
 
         val outFile = swaggerFile.get().asFile
@@ -90,68 +115,59 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         logger.lifecycle("Generated OpenAPI spec: ${outFile.absolutePath} (${paths.size()} paths, ${schemas.size()} schemas)")
     }
 
-    private fun collectDtoSchemas(root: File, schemas: JsonObject) {
-        val portsDir = File(root, "app/ports")
-        if (!portsDir.exists()) return
-
-        portsDir.walkTopDown().filter { it.isFile && it.extension == "cls" }.forEach { file ->
-            val content = file.readText()
-            val className = content.lines()
-                .firstOrNull { it.trimStart().startsWith("CLASS ") }
-                ?.let { Regex("CLASS\\s+([\\w.]+)").find(it)?.groupValues?.get(1) }
-                ?: return@forEach
-            val nameOnly = className.substringAfterLast('.')
-
-            val dto = DtoParser.parse(className, root)
-            if (dto == DtoParser.DtoInfo.EMPTY) return@forEach
-
-            val schema = JsonObject().apply { addProperty("type", "object") }
-            val properties = JsonObject()
-            val innerSchemas = mutableMapOf<String, JsonObject>()
-
-            if (dto.pathProperties.isNotEmpty()) {
-                properties.add("path", JsonObject().apply {
-                    addProperty("\$ref", "#/components/schemas/${nameOnly}_PathSection")
-                })
-            }
-            if (dto.queryProperties.isNotEmpty()) {
-                properties.add("query", JsonObject().apply {
-                    addProperty("\$ref", "#/components/schemas/${nameOnly}_QuerySection")
-                })
-            }
-            if (dto.bodyProperties.isNotEmpty()) {
-                properties.add("body", JsonObject().apply {
-                    addProperty("\$ref", "#/components/schemas/${nameOnly}_BodySection")
-                })
-            }
-
-            fun buildSectionSchema(props: List<DtoParser.DtoProperty>): JsonObject {
-                val innerProps = JsonObject()
-                val requiredArr = JsonArray()
-                props.forEach { p ->
-                    val extent = content.contains("AS ${p.ablType} EXTENT", ignoreCase = true)
-                    val propSchema = mapAblType(p.ablType, if (extent) "EXTENT" else null, schemas)
-                    innerProps.add(p.name, propSchema)
-                    if (p.isRequired) requiredArr.add(p.name)
-                }
-                return JsonObject().apply {
-                    addProperty("type", "object")
-                    add("properties", innerProps)
-                    if (requiredArr.size() > 0) add("required", requiredArr)
-                }
-            }
-
-            if (dto.pathProperties.isNotEmpty())
-                innerSchemas["${nameOnly}_PathSection"] = buildSectionSchema(dto.pathProperties)
-            if (dto.queryProperties.isNotEmpty())
-                innerSchemas["${nameOnly}_QuerySection"] = buildSectionSchema(dto.queryProperties)
-            if (dto.bodyProperties.isNotEmpty())
-                innerSchemas["${nameOnly}_BodySection"] = buildSectionSchema(dto.bodyProperties)
-
-            schema.add("properties", properties)
-            schemas.add(nameOnly, schema)
-            innerSchemas.forEach { (key, value) -> schemas.add(key, value) }
+    private fun collectResponseDtosFromHandlers(handlersFile: File, genRoot: File, pkgRoot: File, dtoClasses: MutableSet<String>, routeParser: RouteParser) {
+        val handlersJson = try {
+            JsonParser.parseString(handlersFile.readText()).asJsonObject
+        } catch (e: Exception) {
+            return
         }
+        val handlers = handlersJson.getAsJsonArray("handlers") ?: return
+
+        handlers.forEach { handlerEl ->
+            val handler = handlerEl.asJsonObject
+            val clsName = handler.get("class")?.asString?.replace(".", "/") ?: return@forEach
+            val shimFile = File(genRoot, "$clsName.cls")
+            
+            if (!shimFile.exists()) return@forEach
+            
+            val shimContent = shimFile.readText()
+            val ctrlRegex = Regex("""ctrl\d+\s*=\s*NEW\s+([\w.]+)\(\)""")
+            val ctrlMatch = ctrlRegex.find(shimContent) ?: return@forEach
+            val ctrlClass = ctrlMatch.groupValues[1]
+            
+            val ctrlFile = findSourceFile(pkgRoot, ctrlClass) ?: return@forEach
+            val routes = routeParser.extractRoutesFromFile(ctrlFile)
+            
+            routes.forEach { route ->
+                // Only collect response DTOs, not request DTOs
+                if (route.responseDtoClassName != null && route.responseDtoClassName.uppercase() != "VOID") {
+                    dtoClasses.add(route.responseDtoClassName)
+                }
+            }
+        }
+    }
+
+    private fun addDtoToSchemas(dtoClass: String, pkgRoot: File, schemas: JsonObject) {
+        val dtoFile = findSourceFile(pkgRoot, dtoClass) ?: return
+        val dto = DtoParser.parse(dtoClass, pkgRoot)
+        if (dto == DtoParser.DtoInfo.EMPTY) return
+
+        val nameOnly = dtoClass.substringAfterLast('.')
+        if (schemas.has(nameOnly)) return  // Already added
+
+        val innerProps = JsonObject()
+        val requiredArr = JsonArray()
+        dto.properties.forEach { p ->
+            innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, schemas))
+            if (p.isRequired) requiredArr.add(p.name)
+        }
+
+        val schema = JsonObject().apply {
+            addProperty("type", "object")
+            add("properties", innerProps)
+            if (requiredArr.size() > 0) add("required", requiredArr)
+        }
+        schemas.add(nameOnly, schema)
     }
 
     private fun mapAblType(abType: String, extent: String?, schemas: JsonObject): JsonObject {
@@ -176,7 +192,15 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         return typeObj
     }
 
-    private fun buildPathsFromHandlers(handlersFile: File, pkgRoot: File, paths: JsonObject, schemas: JsonObject) {
+    private fun findSourceFile(root: File, className: String): File? {
+        val relative = className.replace(".", "/") + ".cls"
+        val file = File(root, relative)
+        logger.lifecycle("Searching for controller source: $relative in ${root.absolutePath}")
+        logger.lifecycle("File exists: ${file.exists()} at ${file.absolutePath}")
+        return file.takeIf { it.exists() }
+    }
+
+    private fun buildPathsFromHandlers(handlersFile: File, genRoot: File, pkgRoot: File, paths: JsonObject, schemas: JsonObject, parameters: JsonObject, routeParser: RouteParser) {
         val handlersJson = try {
             JsonParser.parseString(handlersFile.readText()).asJsonObject
         } catch (e: Exception) {
@@ -184,148 +208,183 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             return
         }
         val handlers = handlersJson.getAsJsonArray("handlers") ?: return
+        val serviceName = handlersFile.nameWithoutExtension
+        logger.lifecycle("Processing handlers file: $serviceName (${handlers.size()} handlers)")
 
         handlers.forEach { handlerEl ->
             val handler = handlerEl.asJsonObject
             val uri = handler.get("uri")?.asString ?: return@forEach
             val clsName = handler.get("class")?.asString?.replace(".", "/") ?: return@forEach
-            val shimFile = File(pkgRoot, "$clsName.cls")
-            if (!shimFile.exists()) return@forEach
+            val shimFile = File(genRoot, "$clsName.cls")
+            
+            if (!shimFile.exists()) {
+                logger.warn("Shim file not found: $shimFile")
+                return@forEach
+            }
+            
             val shimContent = shimFile.readText()
 
             val ctrlRegex = Regex("""ctrl\d+\s*=\s*NEW\s+([\w.]+)\(\)""")
-            val ctrlMatch = ctrlRegex.find(shimContent) ?: return@forEach
+            val ctrlMatch = ctrlRegex.find(shimContent)
+            if (ctrlMatch == null) {
+                logger.warn("No controller found in shim: $shimFile")
+                return@forEach
+            }
+            
             val ctrlClass = ctrlMatch.groupValues[1]
-            val ctrlFile = findSourceFile(pkgRoot, ctrlClass) ?: return@forEach
+            logger.lifecycle("Found controller: $ctrlClass for handler uri: $uri")
+            
+            val ctrlFile = findSourceFile(pkgRoot, ctrlClass)
+            if (ctrlFile == null) {
+                logger.warn("Controller source file not found: $ctrlClass")
+                return@forEach
+            }
 
-            parseRouteSource(ctrlFile, uri, paths, schemas)
+            val routes = routeParser.extractRoutesFromFile(ctrlFile)
+            logger.lifecycle("Extracted ${routes.size} routes from $ctrlClass")
+            routes.forEach { route ->
+                val fullPath = "/$serviceName/${route.routePath}"
+                logger.lifecycle("Adding path: $fullPath [${route.httpMethod}]")
+                buildPathFromRoute(route, fullPath, paths, schemas, parameters, pkgRoot)
+            }
         }
     }
 
-    private fun findSourceFile(root: File, className: String): File? {
-        val relative = className.replace(".", "/") + ".cls"
-        return File(root, relative).takeIf { it.exists() }
-    }
+    private fun buildPathFromRoute(route: RouteDef, fullPath: String, paths: JsonObject, schemas: JsonObject, parameters: JsonObject, pkgRoot: File) {
+        val pathObj = JsonObject()
+        val params = JsonArray()
+        val pathParamNames = route.pathParams.toSet()
+        val supportsRequestBody = route.httpMethod.uppercase() in setOf("POST", "PUT", "PATCH")
 
-    private fun parseRouteSource(sourceFile: File, uri: String, paths: JsonObject, schemas: JsonObject) {
-        val content = sourceFile.readText()
+        // Explicit route path params (inline)
+        pathParamNames.forEach { pName ->
+            params.add(JsonObject().apply {
+                addProperty("name", pName)
+                addProperty("in", "path")
+                addProperty("required", true)
+                add("schema", JsonObject().apply { addProperty("type", "string") })
+            })
+        }
 
-        var pendingVerb: String? = null
-        var pendingPath: String? = null
-        val pendingErrorResponses = mutableMapOf<Int, String>()
-
-        sourceFile.forEachLine { line ->
-            responseRegex.find(line)?.let { m ->
-                pendingErrorResponses[m.groupValues[1].toInt()] = m.groupValues[2]
-            }
-            httpVerbRegex.find(line)?.let { m ->
-                pendingVerb = m.groupValues[1]
-                pendingPath = m.groupValues[3]
-            }
-            methodSigRegex.find(line)?.let { m ->
-                val returnType = m.groupValues[1]
-                val inputType = m.groupValues.getOrNull(3)?.takeIf { it.isNotEmpty() }
-
-                val pathObj = JsonObject()
-
-                val params = JsonArray()
-                pathParamRegex.findAll(pendingPath ?: "").forEach { pm ->
-                    params.add(JsonObject().apply {
-                        addProperty("name", pm.groupValues[1])
-                        addProperty("in", "path")
-                        addProperty("required", true)
-                        add("schema", JsonObject().apply { addProperty("type", "string") })
-                    })
+        // Handle request DTO
+        if (route.requestDtoClassName != null && route.requestDtoClassName != "Tatara.Api.RequestContext") {
+            if (supportsRequestBody) {
+                // For POST/PUT/PATCH: add full DTO to schemas as requestBody
+                val reqName = route.requestDtoClassName.substringAfterLast('.')
+                
+                // Add request DTO to schemas if not already there
+                if (!schemas.has(reqName)) {
+                    addDtoToSchemas(route.requestDtoClassName, pkgRoot, schemas)
                 }
-                if (params.size() > 0) pathObj.add("parameters", params)
-
-                if (inputType != null && inputType != "Tatara.Api.RequestContext") {
-                    val dtoName = inputType.substringAfterLast('.')
-                    val querySchemaName = "${dtoName}_QuerySection"
-                    if (schemas.has(querySchemaName)) {
-                        val querySchema = schemas.getAsJsonObject(querySchemaName)
-                        val queryProps = querySchema.getAsJsonObject("properties") ?: JsonObject()
-                        val requiredArr = querySchema.getAsJsonArray("required")
-                        queryProps.keySet().forEach { propName ->
-                            val propSchema = queryProps.getAsJsonObject(propName)
-                            val isRequired = requiredArr?.contains(com.google.gson.JsonPrimitive(propName)) ?: false
-                            params.add(JsonObject().apply {
-                                addProperty("name", propName)
+                
+                pathObj.add("requestBody", JsonObject().apply {
+                    addProperty("required", true)
+                    add("content", JsonObject().apply {
+                        add("application/json", JsonObject().apply {
+                            add("schema", JsonObject().apply {
+                                addProperty("\$ref", "#/components/schemas/$reqName")
+                            })
+                        })
+                    })
+                })
+            }
+            
+            // Extract query parameters from DTO (for all methods)
+            val dtoInfo = DtoParser.parse(route.requestDtoClassName, pkgRoot)
+            dtoInfo.properties.forEach { prop ->
+                if (prop.location == DtoParser.ParamLocation.QUERY) {
+                    val paramKey = "${route.httpMethod}_${prop.name}"
+                    if (!parameters.has(paramKey)) {
+                        val paramSchema = if (prop.ablType.uppercase() in typeMap) {
+                            JsonObject().apply {
+                                typeMap[prop.ablType.uppercase()]!!.forEach { (k, v) ->
+                                    if (v is Number) addProperty(k, v.toInt())
+                                    else addProperty(k, v.toString())
+                                }
+                            }
+                        } else {
+                            JsonObject().apply { addProperty("\$ref", "#/components/schemas/${prop.ablType.substringAfterLast('.')}") }
+                        }
+                        
+                        if (prop.isExtent) {
+                            parameters.add(paramKey, JsonObject().apply {
+                                addProperty("name", prop.name)
                                 addProperty("in", "query")
-                                addProperty("required", isRequired)
-                                add("schema", propSchema)
+                                addProperty("required", prop.isRequired)
+                                add("schema", JsonObject().apply {
+                                    addProperty("type", "array")
+                                    add("items", paramSchema)
+                                })
+                            })
+                        } else {
+                            parameters.add(paramKey, JsonObject().apply {
+                                addProperty("name", prop.name)
+                                addProperty("in", "query")
+                                addProperty("required", prop.isRequired)
+                                add("schema", paramSchema)
                             })
                         }
                     }
-
-                    val bodySchemaName = "${dtoName}_BodySection"
-                    if (schemas.has(bodySchemaName)) {
-                        pathObj.add("requestBody", JsonObject().apply {
-                            addProperty("required", true)
-                            add("content", JsonObject().apply {
-                                add("application/json", JsonObject().apply {
-                                    add("schema", JsonObject().apply {
-                                        addProperty("\$ref", "#/components/schemas/$bodySchemaName")
-                                    })
-                                })
-                            })
-                        })
-                    }
-                }
-                if (params.size() > 0) pathObj.add("parameters", params)
-
-                val responses = JsonObject()
-                val resp200 = JsonObject().apply {
-                    addProperty("description", "Success")
-                    if (returnType.uppercase() != "VOID") {
-                        val respName = returnType.substringAfterLast('.')
-                        add("content", JsonObject().apply {
-                            add("application/json", JsonObject().apply {
-                                add("schema", JsonObject().apply {
-                                    addProperty("\$ref", "#/components/schemas/$respName")
-                                })
-                            })
-                        })
-                    }
-                }
-                responses.add("200", resp200)
-
-                pendingErrorResponses.forEach { (code, type) ->
-                    val typeName = type.substringAfterLast('.')
-                    responses.add(code.toString(), JsonObject().apply {
-                        addProperty("description", httpStatusDescription(code))
-                        add("content", JsonObject().apply {
-                            add("application/json", JsonObject().apply {
-                                add("schema", JsonObject().apply {
-                                    addProperty("\$ref", "#/components/schemas/$typeName")
-                                })
-                            })
-                        })
+                    params.add(JsonObject().apply {
+                        addProperty("\$ref", "#/components/parameters/$paramKey")
                     })
                 }
-
-                setOf(400, 401, 403, 404, 409, 500).filter { it !in pendingErrorResponses }.forEach { code ->
-                    responses.add(code.toString(), JsonObject().apply {
-                        addProperty("description", httpStatusDescription(code))
-                        add("content", JsonObject().apply {
-                            add("application/json", JsonObject().apply {
-                                add("schema", JsonObject().apply {
-                                    addProperty("\$ref", "#/components/schemas/ErrorResponse")
-                                })
-                            })
-                        })
-                    })
-                }
-
-                pathObj.add("responses", responses)
-
-                val method = pendingVerb?.lowercase() ?: return@let
-                val fullPath = pendingPath ?: return@let
-                val existingPath = paths.getAsJsonObject(fullPath) ?: JsonObject()
-                existingPath.add(method, pathObj)
-                paths.add(fullPath, existingPath)
             }
         }
+
+        if (params.size() > 0) {
+            pathObj.add("parameters", params)
+        }
+
+        val responses = JsonObject()
+        val resp200 = JsonObject().apply {
+            addProperty("description", "Success")
+            if (route.responseDtoClassName != null && route.responseDtoClassName.uppercase() != "VOID") {
+                val respName = route.responseDtoClassName.substringAfterLast('.')
+                add("content", JsonObject().apply {
+                    add("application/json", JsonObject().apply {
+                        add("schema", JsonObject().apply {
+                            addProperty("\$ref", "#/components/schemas/$respName")
+                        })
+                    })
+                })
+            }
+        }
+        responses.add("200", resp200)
+
+        route.errorResponses.forEach { (code, type) ->
+            val typeName = type.substringAfterLast('.')
+            responses.add(code.toString(), JsonObject().apply {
+                addProperty("description", httpStatusDescription(code))
+                add("content", JsonObject().apply {
+                    add("application/json", JsonObject().apply {
+                        add("schema", JsonObject().apply {
+                            addProperty("\$ref", "#/components/schemas/$typeName")
+                        })
+                    })
+                })
+            })
+        }
+
+        setOf(400, 401, 403, 404, 409, 500).filter { it !in route.errorResponses }.forEach { code ->
+            responses.add(code.toString(), JsonObject().apply {
+                addProperty("description", httpStatusDescription(code))
+                add("content", JsonObject().apply {
+                    add("application/json", JsonObject().apply {
+                        add("schema", JsonObject().apply {
+                            addProperty("\$ref", "#/components/schemas/ErrorResponse")
+                        })
+                    })
+                })
+            })
+        }
+
+        pathObj.add("responses", responses)
+
+        val method = route.httpMethod.lowercase()
+        val existingPath = paths.getAsJsonObject(fullPath) ?: JsonObject()
+        existingPath.add(method, pathObj)
+        paths.add(fullPath, existingPath)
     }
 
     private fun httpStatusDescription(code: Int): String = when (code) {

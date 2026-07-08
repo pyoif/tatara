@@ -43,30 +43,19 @@ abstract class GenerateRoutesTask : DefaultTask() {
         val errorResponses: Map<Int, String> = emptyMap()
     )
 
-    // Single annotation: @VERB("/path"). Verb is case-insensitive; path preserves case
-    // (URL paths are case-sensitive in HTTP). Accepts both ' and " quotes via backreference.
-    // Group 1 = verb, group 2 = quote, group 3 = path.
     private val httpVerbRegex = Regex(
         """(?i)@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\(\s*(["'])([^"']+)\2\s*\)"""
     )
     private val classRegex = Regex("""CLASS\s+([\w.]+)""")
-    // Matches ABL METHOD definition lines. Requires PUBLIC or PROTECTED (PRIVATE is not
-    // routable; CONSTRUCTOR is excluded by requiring PUBLIC|PROTECTED).
-    // Return type is optional: "METHOD PUBLIC VOID Name(" or "METHOD PUBLIC Name(" both match.
     private val methodDefRegex = Regex(
         """(?i)^\s*METHOD\s+(?:PUBLIC|PROTECTED)\s+(?:\w+\s+)?(\w+)\s*[(]"""
     )
     private val pathParamRegex = Regex("""\{(\w+)\}""")
-    // @Response(code, Type) for non-200 error overrides. Group 1 = code, group 2 = type.
     private val responseAnnotationRegex = Regex(
         """@Response\(\s*(\d{3})\s*,\s*([\w.]+)\s*\)"""
     )
-    // Full method signature: return type, method name, optional INPUT param type.
-    // "METHOD PUBLIC ReturnType Name(INPUT x AS Type):"
-    // "METHOD PUBLIC VOID Name():"
-    // Group 1 = return type (or "VOID"), group 2 = method name, group 3 = input type (optional)
     private val methodSigRegex = Regex(
-        """(?i)^\s*METHOD\s+(?:PUBLIC|PROTECTED)\s+(\w+(?:\.\w+)*)\s+(\w+)\s*\(\s*(?:INPUT\s+\w+\s+AS\s+([\w.]+)\s*)?\)\s*[.:]"""
+        """(?i)^\s*METHOD\s+(?:PUBLIC|PROTECTED)\s+(\w+(?:\.\w+)*)\s+(\w+)\s*\(\s*(?:INPUT\s+\w+\s+AS\s+([\w.]+)\s*)?\)\s*:"""
     )
 
     @TaskAction
@@ -105,8 +94,6 @@ abstract class GenerateRoutesTask : DefaultTask() {
             }
         }
 
-        // Carry forward unchanged files so a per-file diff doesn't drop their routes from
-        // the global view when other files change in the same run.
         previousRoutesByFile.forEach { (path, routes) ->
             if (!currentRoutesByFile.containsKey(path)) {
                 currentRoutesByFile[path] = routes
@@ -118,9 +105,6 @@ abstract class GenerateRoutesTask : DefaultTask() {
         val template = javaClass.getResource("/RouteShimTemplate.cls")?.readText()
             ?: throw IllegalStateException("Missing RouteShimTemplate.cls resource")
 
-        // Recovery: if a shim is missing on disk (e.g. user cleared build/generated) but the
-        // cache says it should exist, treat it as dirty. The diff-based check above only fires
-        // when annotations actually change.
         routesByPath.keys.forEach { routePath ->
             val guardPath = pathSanitize(routePath)
             val shimFile = File(outDir, "$guardPath.cls")
@@ -138,14 +122,12 @@ abstract class GenerateRoutesTask : DefaultTask() {
 
         saveStateCache(cacheFile, currentRoutesByFile)
 
-        // Group all current routes (not just dirty) by service prefix and write .handlers
         val allHandlersRoutes = currentRoutesByFile.values.flatten()
         val routesByService = allHandlersRoutes.groupBy { it.routePath.substringBefore("/", missingDelimiterValue = "") }
             .filter { it.key.isNotEmpty() }
 
         val handlersOutDir = handlersDir.get().asFile
         handlersOutDir.mkdirs()
-        // Remove stale .handlers files from previous runs
         handlersOutDir.listFiles()?.filter { it.extension == "handlers" }?.forEach { it.delete() }
 
         routesByService.forEach { (serviceName, routes) ->
@@ -168,17 +150,14 @@ abstract class GenerateRoutesTask : DefaultTask() {
         var pendingErrorResponses = mutableMapOf<Int, String>()
 
         file.forEachLine { line ->
-            // Collect @Response annotations before the method line
             responseAnnotationRegex.find(line)?.let { m ->
                 pendingErrorResponses[m.groupValues[1].toInt()] = m.groupValues[2]
             }
-            // @VERB annotation
             httpVerbRegex.find(line)?.let { m ->
                 pendingVerb = m.groupValues[1].uppercase()
                 pendingPath = m.groupValues[3].let { if (it.startsWith("/")) it.substring(1) else it }
                 pendingPathParams = pathParamRegex.findAll(m.groupValues[3]).map { it.groupValues[1] }.toList()
             }
-            // Full method signature: captures return type + INPUT type
             methodSigRegex.find(line)?.let { m ->
                 if (pendingVerb != null && pendingPath != null) {
                     val returnTypeRaw = m.groupValues[1]
@@ -204,7 +183,6 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 pendingVerb = null; pendingPath = null
                 pendingPathParams = emptyList(); pendingErrorResponses = mutableMapOf()
             }
-            // Fallback: old-style METHOD line (no return type, no INPUT type)
             methodDefRegex.find(line)?.let { m ->
                 if (pendingVerb != null && pendingPath != null) {
                     val ablMethod = m.groupValues[1]
@@ -290,19 +268,14 @@ abstract class GenerateRoutesTask : DefaultTask() {
             val hasResponseDto = def.responseDtoClassName != null
             val dtoInfo = if (hasRequestDto) DtoParser.parse(def.requestDtoClassName!!, srcRoot) else DtoParser.DtoInfo.EMPTY
 
-            // Collect USING entries for DTO + error types
             if (hasRequestDto) usingSet.add(def.requestDtoClassName!!)
             if (hasResponseDto) usingSet.add(def.responseDtoClassName!!)
             def.errorResponses.values.forEach { usingSet.add(it) }
 
             methodHandlersBlock.append("\tMETHOD OVERRIDE PROTECTED INTEGER $handleName(INPUT poRequest AS OpenEdge.Web.IWebRequest):\r\n")
 
-            // === Variable declarations ===
             if (hasRequestDto) {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE oReq   AS ${def.requestDtoClassName} NO-UNDO.\r\n")
-                methodHandlersBlock.append("\t\tDEFINE VARIABLE oPath  AS ${def.requestDtoClassName}.PathSection  NO-UNDO.\r\n")
-                methodHandlersBlock.append("\t\tDEFINE VARIABLE oQuer  AS ${def.requestDtoClassName}.QuerySection NO-UNDO.\r\n")
-                methodHandlersBlock.append("\t\tDEFINE VARIABLE oBody  AS ${def.requestDtoClassName}.BodySection  NO-UNDO.\r\n")
             }
             if (hasResponseDto) {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE oResult AS ${def.responseDtoClassName} NO-UNDO.\r\n")
@@ -313,114 +286,156 @@ abstract class GenerateRoutesTask : DefaultTask() {
             }
             methodHandlersBlock.append("\r\n")
 
-            // === Request DTO construction ===
             if (hasRequestDto) {
-                // PathSection from route path parameters
-                methodHandlersBlock.append("\t\toPath = NEW ${def.requestDtoClassName}.PathSection().\r\n")
-                dtoInfo.pathProperties.forEach { prop ->
-                    methodHandlersBlock.append("\t\toPath:${prop.name} = poRequest:GetPathParameter(\"${prop.name}\").\r\n")
-                }
-                methodHandlersBlock.append("\r\n")
+                methodHandlersBlock.append("\t\toReq = NEW ${def.requestDtoClassName}().\r\n")
+                
+                val pathProps = dtoInfo.properties.filter { it.location == DtoParser.ParamLocation.PATH || (it.location == DtoParser.ParamLocation.UNKNOWN && def.pathParams.contains(it.name)) }
+                val bodyProps = dtoInfo.properties.filter { it.location == DtoParser.ParamLocation.BODY || (it.location == DtoParser.ParamLocation.UNKNOWN && it.name.equals("body", ignoreCase = true)) }
+                val queryProps = dtoInfo.properties.filter { !pathProps.contains(it) && !bodyProps.contains(it) }
 
-                // QuerySection with @Required validation
-                methodHandlersBlock.append("\t\toQuer = NEW ${def.requestDtoClassName}.QuerySection().\r\n")
-                dtoInfo.queryProperties.forEach { prop ->
-                    when {
-                        prop.ablType.uppercase() == "INTEGER" || prop.ablType.uppercase() == "INT64" -> {
-                            methodHandlersBlock.append("\t\toQuer:${prop.name} = INTEGER(poRequest:GetQueryParameter(\"${prop.name}\")).\r\n")
+                // Path mappings
+                def.pathParams.forEach { paramName ->
+                    methodHandlersBlock.append("\t\toReq:$paramName = poRequest:GetPathParameter(\"$paramName\").\r\n")
+                }
+
+                // Query mappings
+                if (queryProps.isNotEmpty()) {
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE oQueryParams AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cQuery AS CHARACTER NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cPair AS CHARACTER NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cKey AS CHARACTER NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cValue AS CHARACTER NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE iPos AS INTEGER NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE ix AS INTEGER NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\toQueryParams = NEW Progress.Json.ObjectModel.JsonObject().\r\n")
+                    methodHandlersBlock.append("\t\tcQuery = poRequest:URI:QueryString.\r\n")
+                    methodHandlersBlock.append("\t\tIF cQuery <> \"\" AND cQuery <> ? THEN DO:\r\n")
+                    methodHandlersBlock.append("\t\t\tIF cQuery BEGINS \"?\" THEN cQuery = SUBSTRING(cQuery, 2).\r\n")
+                    methodHandlersBlock.append("\t\t\tDO ix = 1 TO NUM-ENTRIES(cQuery, '&'):\r\n")
+                    methodHandlersBlock.append("\t\t\t\tcPair = ENTRY(ix, cQuery, '&').\r\n")
+                    methodHandlersBlock.append("\t\t\t\tiPos = INDEX(cPair, \"=\").\r\n")
+                    methodHandlersBlock.append("\t\t\t\tIF iPos > 0 THEN DO:\r\n")
+                    methodHandlersBlock.append("\t\t\t\t\tcKey = TRIM(SUBSTRING(cPair, 1, iPos - 1)).\r\n")
+                    methodHandlersBlock.append("\t\t\t\t\tcValue = TRIM(SUBSTRING(cPair, iPos + 1)).\r\n")
+                    methodHandlersBlock.append("\t\t\t\t\tcValue = OpenEdge.Net.URI:Decode(cValue).\r\n")
+                    methodHandlersBlock.append("\t\t\t\t\toQueryParams:Add(cKey, cValue).\r\n")
+                    methodHandlersBlock.append("\t\t\t\tEND.\r\n")
+                    methodHandlersBlock.append("\t\t\t\tELSE oQueryParams:Add(TRIM(cPair), \"\").\r\n")
+                    methodHandlersBlock.append("\t\t\tEND.\r\n")
+                    methodHandlersBlock.append("\t\tEND.\r\n")
+                    methodHandlersBlock.append("\r\n")
+                    
+                    queryProps.forEach { prop ->
+                        methodHandlersBlock.append("\t\tIF oQueryParams:Has(\"${prop.name}\") AND NOT oQueryParams:IsNull(\"${prop.name}\") THEN DO:\r\n")
+                        when (prop.ablType.uppercase()) {
+                            "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetInteger(\"${prop.name}\").\r\n")
+                            "DECIMAL" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetDecimal(\"${prop.name}\").\r\n")
+                            "LOGICAL" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetLogical(\"${prop.name}\").\r\n")
+                            else -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetCharacter(\"${prop.name}\").\r\n")
                         }
-                        prop.ablType.uppercase() == "DECIMAL" -> {
-                            methodHandlersBlock.append("\t\toQuer:${prop.name} = DECIMAL(poRequest:GetQueryParameter(\"${prop.name}\")).\r\n")
-                        }
-                        prop.ablType.uppercase() == "LOGICAL" -> {
-                            methodHandlersBlock.append("\t\toQuer:${prop.name} = LOGICAL(poRequest:GetQueryParameter(\"${prop.name}\")).\r\n")
-                        }
-                        else -> {
-                            methodHandlersBlock.append("\t\toQuer:${prop.name} = poRequest:GetQueryParameter(\"${prop.name}\").\r\n")
+                        methodHandlersBlock.append("\t\tEND.\r\n")
+                        if (prop.isRequired) {
+                            methodHandlersBlock.append("\t\tELSE DO:\r\n")
+                            methodHandlersBlock.append("\t\t\toResponse:StatusCode = 400.\r\n")
+                            methodHandlersBlock.append("\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(\"Missing required query parameter: ${prop.name}\").\r\n")
+                            methodHandlersBlock.append("\t\t\tRETURN 0.\r\n")
+                            methodHandlersBlock.append("\t\tEND.\r\n")
                         }
                     }
-                    if (prop.isRequired) {
-                        methodHandlersBlock.append("\t\tIF oQuer:${prop.name} = ? THEN DO:\r\n")
-                        methodHandlersBlock.append("\t\t\toResponse:StatusCode = 400.\r\n")
-                        methodHandlersBlock.append("\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(\"Missing required parameter: ${prop.name}\").\r\n")
-                        methodHandlersBlock.append("\t\t\tRETURN 0.\r\n")
+                }
+                
+                // Native JSON Deserialization mappings
+                if (bodyProps.isNotEmpty()) {
+                    methodHandlersBlock.append("\t\tIF VALID-OBJECT(poRequest:Entity) AND TYPE-OF(poRequest:Entity, Progress.Json.ObjectModel.JsonObject) THEN DO:\r\n")
+                    methodHandlersBlock.append("\t\t\tDEFINE VARIABLE oJson AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\r\n")
+                    methodHandlersBlock.append("\t\t\toJson = CAST(poRequest:Entity, Progress.Json.ObjectModel.JsonObject).\r\n")
+                    bodyProps.forEach { prop ->
+                        methodHandlersBlock.append("\t\t\tIF oJson:Has(\"${prop.name}\") AND NOT oJson:IsNull(\"${prop.name}\") THEN DO:\r\n")
+                        when (prop.ablType.uppercase()) {
+                            "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetInteger(\"${prop.name}\").\r\n")
+                            "DECIMAL" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetDecimal(\"${prop.name}\").\r\n")
+                            "LOGICAL" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetLogical(\"${prop.name}\").\r\n")
+                            "DATETIME", "DATETIME-TZ" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetDatetime(\"${prop.name}\").\r\n")
+                            "LONGCHAR", "CHARACTER" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetCharacter(\"${prop.name}\").\r\n")
+                            else -> methodHandlersBlock.append("\t\t\t\t/* Nested complex objects not fully mapped natively */\r\n")
+                        }
+                        methodHandlersBlock.append("\t\t\tEND.\r\n")
+                        if (prop.isRequired) {
+                            methodHandlersBlock.append("\t\t\tELSE DO:\r\n")
+                            methodHandlersBlock.append("\t\t\t\toResponse:StatusCode = 400.\r\n")
+                            methodHandlersBlock.append("\t\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(\"Missing required body parameter: ${prop.name}\").\r\n")
+                            methodHandlersBlock.append("\t\t\t\tRETURN 0.\r\n")
+                            methodHandlersBlock.append("\t\t\tEND.\r\n")
+                        }
+                    }
+                    methodHandlersBlock.append("\t\tEND.\r\n")
+
+                    // Fallback block if entity happens to be plain text or object bound directly to body
+                    val rawBodyProp = bodyProps.find { it.name.equals("body", ignoreCase = true) && (it.ablType.uppercase() == "LONGCHAR" || it.ablType.uppercase() == "CHARACTER") }
+                    if (rawBodyProp != null) {
+                        methodHandlersBlock.append("\t\tELSE IF VALID-OBJECT(poRequest:Entity) THEN DO:\r\n")
+                        methodHandlersBlock.append("\t\t\tIF TYPE-OF(poRequest:Entity, OpenEdge.Core.String) THEN\r\n")
+                        methodHandlersBlock.append("\t\t\t\toReq:${rawBodyProp.name} = CAST(poRequest:Entity, OpenEdge.Core.String):Value.\r\n")
+                        methodHandlersBlock.append("\t\t\tELSE oReq:${rawBodyProp.name} = poRequest:Entity:ToString().\r\n")
                         methodHandlersBlock.append("\t\tEND.\r\n")
                     }
                 }
                 methodHandlersBlock.append("\r\n")
-
-                // BodySection
-                methodHandlersBlock.append("\t\toBody = NEW ${def.requestDtoClassName}.BodySection().\r\n")
-                methodHandlersBlock.append("\t\tIF VALID-OBJECT(poRequest:Entity) THEN\r\n")
-                methodHandlersBlock.append("\t\t\toBody = CAST(poRequest:Entity, ${def.requestDtoClassName}.BodySection).\r\n")
-                methodHandlersBlock.append("\r\n")
-
-                // Assemble top-level DTO
-                methodHandlersBlock.append("\t\toReq = NEW ${def.requestDtoClassName}().\r\n")
-                methodHandlersBlock.append("\t\tASSIGN\r\n")
-                methodHandlersBlock.append("\t\t\toReq:path  = oPath\r\n")
-                methodHandlersBlock.append("\t\t\toReq:query = oQuer\r\n")
-                methodHandlersBlock.append("\t\t\toReq:body  = oBody.\r\n")
-                methodHandlersBlock.append("\r\n")
             }
 
-            // === Controller call ===
             methodHandlersBlock.append("\t\t$controllerVar = NEW $ctrlType().\r\n")
             methodHandlersBlock.append("\t\toResponse = NEW OpenEdge.Web.WebResponse().\r\n")
+            methodHandlersBlock.append("\t\tDO ON ERROR UNDO, THROW:\r\n")
 
-            // Legacy path: no typed DTOs at all
             if (!hasRequestDto && !hasResponseDto) {
                 val sz = def.pathParams.size
-                methodHandlersBlock.append("\t\tDEFINE VARIABLE oContext AS Tatara.Api.RequestContext NO-UNDO.\r\n")
+                methodHandlersBlock.append("\t\t\tDEFINE VARIABLE oContext AS Tatara.Api.RequestContext NO-UNDO.\r\n")
                 if (sz > 0) {
-                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cParams AS CHARACTER EXTENT $sz NO-UNDO.\r\n")
-                }
-                methodHandlersBlock.append("\r\n")
-                if (sz > 0) {
+                    methodHandlersBlock.append("\t\t\tDEFINE VARIABLE cParams AS CHARACTER EXTENT $sz NO-UNDO.\r\n")
                     def.pathParams.forEachIndexed { i, name ->
-                        methodHandlersBlock.append("\t\tcParams[${i + 1}] = \"$name\".\r\n")
+                        methodHandlersBlock.append("\t\t\tcParams[${i + 1}] = \"$name\".\r\n")
                     }
-                    methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest, cParams).\r\n")
+                    methodHandlersBlock.append("\t\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest, cParams).\r\n")
                 } else {
-                    methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest).\r\n")
+                    methodHandlersBlock.append("\t\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest).\r\n")
                 }
-                methodHandlersBlock.append("\t\toResponse:StatusCode = 200.\r\n")
-                methodHandlersBlock.append("\t\t$controllerVar:${def.ablMethod}(INPUT oContext, INPUT-OUTPUT oResponse).\r\n")
-                methodHandlersBlock.append("\t\tTatara.Api.ResponseWriter:Write(poRequest, oResponse).\r\n")
-                methodHandlersBlock.append("\t\tRETURN 0.\r\n")
+                methodHandlersBlock.append("\t\t\toResponse:StatusCode = 200.\r\n")
+                methodHandlersBlock.append("\t\t\t$controllerVar:${def.ablMethod}(INPUT oContext, INPUT-OUTPUT oResponse).\r\n")
+                methodHandlersBlock.append("\t\t\tTatara.Api.ResponseWriter:Write(poRequest, oResponse).\r\n")
+                methodHandlersBlock.append("\t\t\tRETURN 0.\r\n")
+                methodHandlersBlock.append("\t\tEND.\r\n")
                 methodHandlersBlock.append("\tEND METHOD.")
                 return@forEachIndexed
             }
 
-            // === Typed handler call with CATCH blocks ===
-            val catchLines = StringBuilder()
-            def.errorResponses.forEach { (code, type) ->
-                catchLines.append("\tCATCH err AS $type:\r\n")
-                catchLines.append("\t\toResponse:StatusCode = $code.\r\n")
-                catchLines.append("\t\toResponse:Entity = err.\r\n")
-                catchLines.append("\t\tRETURN 0.\r\n")
-            }
-            catchLines.append("\tCATCH err AS Tatara.Api.ApiError:\r\n")
-            catchLines.append("\t\toResponse:StatusCode = err:HttpCode.\r\n")
-            catchLines.append("\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(err:Message).\r\n")
-            catchLines.append("\t\tRETURN 0.\r\n")
-            catchLines.append("\tCATCH err AS Progress.Lang.AppError:\r\n")
-            catchLines.append("\t\toResponse:StatusCode = 500.\r\n")
-            catchLines.append("\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(err:GetMessage()).\r\n")
-            catchLines.append("\t\tRETURN 0.\r\n")
-            catchLines.append("\tEND CATCH.\r\n")
-
             if (hasRequestDto && hasResponseDto) {
-                methodHandlersBlock.append("\t\toResult = $controllerVar:${def.ablMethod}(INPUT oReq)\r\n")
+                methodHandlersBlock.append("\t\t\tASSIGN oResult = $controllerVar:${def.ablMethod}(INPUT oReq).\r\n")
             } else if (hasRequestDto) {
-                methodHandlersBlock.append("\t\t$controllerVar:${def.ablMethod}(INPUT oReq)\r\n")
+                methodHandlersBlock.append("\t\t\t$controllerVar:${def.ablMethod}(INPUT oReq).\r\n")
             } else {
-                methodHandlersBlock.append("\t\toResult = $controllerVar:${def.ablMethod}()\r\n")
+                methodHandlersBlock.append("\t\t\tASSIGN oResult = $controllerVar:${def.ablMethod}().\r\n")
             }
-            methodHandlersBlock.append(catchLines)
+
+            def.errorResponses.forEach { (code, type) ->
+                methodHandlersBlock.append("\t\t\tCATCH errCustom AS $type:\r\n")
+                methodHandlersBlock.append("\t\t\t\toResponse:StatusCode = $code.\r\n")
+                methodHandlersBlock.append("\t\t\t\toResponse:Entity = errCustom.\r\n")
+                methodHandlersBlock.append("\t\t\t\tRETURN 0.\r\n")
+                methodHandlersBlock.append("\t\t\tEND.\r\n")
+            }
+            methodHandlersBlock.append("\t\t\tCATCH errApi AS Tatara.Api.ApiError:\r\n")
+            methodHandlersBlock.append("\t\t\t\toResponse:StatusCode = errApi:HttpCode.\r\n")
+            methodHandlersBlock.append("\t\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(errApi:GetMessage(1)).\r\n")
+            methodHandlersBlock.append("\t\t\t\tRETURN 0.\r\n")
+            methodHandlersBlock.append("\t\t\tEND.\r\n")
+            methodHandlersBlock.append("\t\t\tCATCH errApp AS Progress.Lang.AppError:\r\n")
+            methodHandlersBlock.append("\t\t\t\toResponse:StatusCode = 500.\r\n")
+            methodHandlersBlock.append("\t\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(errApp:GetMessage(1)).\r\n")
+            methodHandlersBlock.append("\t\t\t\tRETURN 0.\r\n")
+            methodHandlersBlock.append("\t\t\tEND.\r\n")
+            methodHandlersBlock.append("\t\tEND.\r\n")
             methodHandlersBlock.append("\r\n")
 
-            // Success
             methodHandlersBlock.append("\t\toResponse:StatusCode = 200.\r\n")
             if (hasResponseDto) {
                 methodHandlersBlock.append("\t\toResponse:Entity = oResult.\r\n")
@@ -458,9 +473,6 @@ abstract class GenerateRoutesTask : DefaultTask() {
         sb.append("    \"serviceName\": \"$serviceName\",\n")
         sb.append("    \"handlers\": [\n")
 
-        // Sort: most-specific (longest URI, most segments) first.
-        // PASOE uses first-match-wins, so /project/{projectId}/spk must be checked
-        // before /project/{projectId} or the generic entry swallows all sub-routes.
         val sorted = routes.sortedByDescending { it.routePath.count { c -> c == '/' } }
 
         sorted.forEachIndexed { idx, r ->

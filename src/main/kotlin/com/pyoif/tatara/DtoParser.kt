@@ -3,17 +3,18 @@ package com.pyoif.tatara
 import java.io.File
 
 object DtoParser {
+    enum class ParamLocation { PATH, QUERY, BODY, UNKNOWN }
 
     data class DtoProperty(
         val name: String,
         val ablType: String,
-        val isRequired: Boolean = false
+        val isRequired: Boolean = false,
+        val location: ParamLocation = ParamLocation.UNKNOWN,
+        val isExtent: Boolean = false
     )
 
     data class DtoInfo(
-        val pathProperties: List<DtoProperty> = emptyList(),
-        val queryProperties: List<DtoProperty> = emptyList(),
-        val bodyProperties: List<DtoProperty> = emptyList()
+        val properties: List<DtoProperty> = emptyList()
     ) {
         companion object {
             val EMPTY = DtoInfo()
@@ -21,58 +22,48 @@ object DtoParser {
     }
 
     private val propDefRegex = Regex(
-        """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)"""
+        """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
-    private val requiredRegex = Regex("""(?i)//\s*@Required""")
-    private val sectionRegex = Regex(
-        """(?i)CLASS\s+(PathSection|QuerySection|BodySection)\s*[:\s](.*?)END\s+CLASS\.""",
-        RegexOption.DOT_MATCHES_ALL
-    )
+    private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body)""")
 
     fun parse(dtoClassName: String, srcRoot: File): DtoInfo {
         val file = resolveFile(dtoClassName, srcRoot) ?: return DtoInfo.EMPTY
-        val content = file.readText()
-        val pathProps = mutableListOf<DtoProperty>()
-        val queryProps = mutableListOf<DtoProperty>()
-        val bodyProps = mutableListOf<DtoProperty>()
+        val properties = mutableListOf<DtoProperty>()
+        val lines = file.readText().lines()
 
-        sectionRegex.findAll(content).forEach { sectionMatch ->
-            val sectionName = sectionMatch.groupValues[1]
-            val sectionBody = sectionMatch.groupValues[2]
-            val targetList = when (sectionName) {
-                "PathSection" -> pathProps
-                "QuerySection" -> queryProps
-                "BodySection" -> bodyProps
-                else -> return@forEach
+        var isReq = false
+        var loc = ParamLocation.UNKNOWN
+
+        for (line in lines) {
+            val trimmed = line.trim()
+            annotationRegex.findAll(trimmed).forEach { m ->
+                when (m.groupValues[1].lowercase()) {
+                    "required" -> isReq = true
+                    "path" -> loc = ParamLocation.PATH
+                    "query" -> loc = ParamLocation.QUERY
+                    "body" -> loc = ParamLocation.BODY
+                }
             }
-            parseSection(sectionBody, targetList)
+
+            propDefRegex.find(trimmed)?.let { m ->
+                properties.add(DtoProperty(
+                    name = m.groupValues[1],
+                    ablType = m.groupValues[2],
+                    isRequired = isReq,
+                    location = loc,
+                    isExtent = m.groups[3]?.value != null
+                ))
+                // Reset for next property
+                isReq = false
+                loc = ParamLocation.UNKNOWN
+            }
         }
-        return DtoInfo(pathProps, queryProps, bodyProps)
+        return DtoInfo(properties)
     }
 
     private fun resolveFile(dtoClassName: String, srcRoot: File): File? {
         val relativePath = dtoClassName.replace(".", "/") + ".cls"
         val file = File(srcRoot, relativePath)
         return if (file.exists()) file else null
-    }
-
-    private fun parseSection(sectionBody: String, targetList: MutableList<DtoProperty>) {
-        val lines = sectionBody.lines()
-        var previousLineHasRequired = false
-        for (i in lines.indices) {
-            val line = lines[i].trim()
-            if (requiredRegex.containsMatchIn(line)) {
-                previousLineHasRequired = true
-                continue
-            }
-            propDefRegex.find(line)?.let { m ->
-                targetList.add(DtoProperty(
-                    m.groupValues[1],
-                    m.groupValues[2],
-                    previousLineHasRequired || requiredRegex.containsMatchIn(line)
-                ))
-                previousLineHasRequired = false
-            }
-        }
     }
 }
