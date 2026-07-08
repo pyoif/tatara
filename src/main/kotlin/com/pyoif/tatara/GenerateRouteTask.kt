@@ -153,7 +153,9 @@ abstract class GenerateRoutesTask : DefaultTask() {
         }
     }
 
-    private fun routeKey(r: RouteDef): String = "${r.routePath}|${r.httpMethod}|${r.ablMethod}"
+    private fun routeKey(r: RouteDef): String =
+        "${r.routePath}|${r.httpMethod}|${r.ablMethod}|${r.requestDtoClassName ?: ""}|${r.responseDtoClassName ?: ""}|" +
+        r.errorResponses.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" }
 
     private fun extractRoutesFromFile(file: File): List<RouteDef> {
         val classMatch = classRegex.find(file.readText()) ?: return emptyList()
@@ -223,10 +225,26 @@ abstract class GenerateRoutesTask : DefaultTask() {
         if (cacheFile.exists()) {
             cacheFile.forEachLine { line ->
                 val parts = line.split('|')
-                if (parts.size == 6) {
-                    val params = if (parts[5].isEmpty()) emptyList() else parts[5].split(',')
-                    state.getOrPut(parts[0]) { mutableListOf() }
-                        .add(RouteDef(parts[1], parts[2], parts[3], parts[4], params))
+                when {
+                    parts.size >= 8 -> {
+                        val params = if (parts[5].isEmpty()) emptyList() else parts[5].split(',')
+                        val reqDto = parts[6].takeIf { it.isNotEmpty() }
+                        val respDto = parts[7].takeIf { it.isNotEmpty() }
+                        val errorMap = mutableMapOf<Int, String>()
+                        if (parts.size > 8 && parts[8].isNotEmpty()) {
+                            parts[8].split(',').forEach { pair ->
+                                val kv = pair.split('=')
+                                if (kv.size == 2) errorMap[kv[0].toInt()] = kv[1]
+                            }
+                        }
+                        state.getOrPut(parts[0]) { mutableListOf() }
+                            .add(RouteDef(parts[1], parts[2], parts[3], parts[4], params, reqDto, respDto, errorMap))
+                    }
+                    parts.size == 6 -> {
+                        val params = if (parts[5].isEmpty()) emptyList() else parts[5].split(',')
+                        state.getOrPut(parts[0]) { mutableListOf() }
+                            .add(RouteDef(parts[1], parts[2], parts[3], parts[4], params))
+                    }
                 }
             }
         }
@@ -239,7 +257,9 @@ abstract class GenerateRoutesTask : DefaultTask() {
             state.forEach { (filePath, routes) ->
                 routes.forEach { r ->
                     val paramsCsv = r.pathParams.joinToString(",")
-                    writer.println("$filePath|${r.routePath}|${r.httpMethod}|${r.className}|${r.ablMethod}|$paramsCsv")
+                    val errorCsv = r.errorResponses.entries.sortedBy { it.key }
+                        .joinToString(",") { "${it.key}=${it.value}" }
+                    writer.println("$filePath|${r.routePath}|${r.httpMethod}|${r.className}|${r.ablMethod}|$paramsCsv|${r.requestDtoClassName ?: ""}|${r.responseDtoClassName ?: ""}|$errorCsv")
                 }
             }
         }
