@@ -37,7 +37,10 @@ abstract class GenerateRoutesTask : DefaultTask() {
         val httpMethod: String,
         val className: String,
         val ablMethod: String,
-        val pathParams: List<String> = emptyList()
+        val pathParams: List<String> = emptyList(),
+        val requestDtoClassName: String? = null,
+        val responseDtoClassName: String? = null,
+        val errorResponses: Map<Int, String> = emptyMap()
     )
 
     // Single annotation: @VERB("/path"). Verb is case-insensitive; path preserves case
