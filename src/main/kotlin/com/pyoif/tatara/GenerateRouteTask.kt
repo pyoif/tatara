@@ -275,64 +275,171 @@ abstract class GenerateRoutesTask : DefaultTask() {
         val firstClassName = routes.firstOrNull()?.className ?: ""
         usingSet.add(firstClassName)
 
+        val srcRoot = srcDir.get().asFile
+
         routes.forEachIndexed { index, def ->
             val handleName = "Handle" + def.httpMethod.lowercase().replaceFirstChar { it.uppercase() }
             if (index > 0) methodHandlersBlock.append("\r\n\r\n")
 
-            // Declare controller with exact type — no DYNAMIC-INVOKE, no reflection.
             val controllerVar = "ctrl${index}"
             val ctrlClassName = def.className
-            val classNameOnly = ctrlClassName.substringAfterLast('.')
-            val ctrlType = if (ctrlClassName.contains('.')) ctrlClassName else classNameOnly
-
+            val ctrlType = if (ctrlClassName.contains('.')) ctrlClassName else ctrlClassName
             usingSet.add(ctrlClassName)
 
+            val hasRequestDto = def.requestDtoClassName != null
+            val hasResponseDto = def.responseDtoClassName != null
+            val dtoInfo = if (hasRequestDto) DtoParser.parse(def.requestDtoClassName!!, srcRoot) else DtoParser.DtoInfo.EMPTY
+
+            // Collect USING entries for DTO + error types
+            if (hasRequestDto) usingSet.add(def.requestDtoClassName!!)
+            if (hasResponseDto) usingSet.add(def.responseDtoClassName!!)
+            def.errorResponses.values.forEach { usingSet.add(it) }
+
             methodHandlersBlock.append("\tMETHOD OVERRIDE PROTECTED INTEGER $handleName(INPUT poRequest AS OpenEdge.Web.IWebRequest):\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oContext  AS Tatara.Api.RequestContext  NO-UNDO.\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse AS Tatara.Api.ResponseContext NO-UNDO.\r\n")
+
+            // === Variable declarations ===
+            if (hasRequestDto) {
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE oReq   AS ${def.requestDtoClassName} NO-UNDO.\r\n")
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE oPath  AS ${def.requestDtoClassName}.PathSection  NO-UNDO.\r\n")
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE oQuer  AS ${def.requestDtoClassName}.QuerySection NO-UNDO.\r\n")
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE oBody  AS ${def.requestDtoClassName}.BodySection  NO-UNDO.\r\n")
+            }
+            if (hasResponseDto) {
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE oResult AS ${def.responseDtoClassName} NO-UNDO.\r\n")
+            }
+            methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse AS OpenEdge.Web.WebResponse NO-UNDO.\r\n")
             if (index == 0 || def.className != routes[0].className) {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE $controllerVar AS $ctrlType NO-UNDO.\r\n")
             }
-            val sz = if (def.pathParams.isEmpty()) 0 else def.pathParams.size
-            if (sz > 0) {
-                methodHandlersBlock.append("\t\tDEFINE VARIABLE cParams   AS CHARACTER EXTENT $sz NO-UNDO.\r\n")
-            }
             methodHandlersBlock.append("\r\n")
-            if (sz > 0) {
-                def.pathParams.forEachIndexed { i, name ->
-                    methodHandlersBlock.append("\t\tcParams[${i + 1}] = \"$name\".\r\n")
+
+            // === Request DTO construction ===
+            if (hasRequestDto) {
+                // PathSection from route path parameters
+                methodHandlersBlock.append("\t\toPath = NEW ${def.requestDtoClassName}.PathSection().\r\n")
+                dtoInfo.pathProperties.forEach { prop ->
+                    methodHandlersBlock.append("\t\toPath:${prop.name} = poRequest:GetPathParameter(\"${prop.name}\").\r\n")
                 }
-                methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest, cParams).\r\n")
-            } else {
-                methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest).\r\n")
+                methodHandlersBlock.append("\r\n")
+
+                // QuerySection with @Required validation
+                methodHandlersBlock.append("\t\toQuer = NEW ${def.requestDtoClassName}.QuerySection().\r\n")
+                dtoInfo.queryProperties.forEach { prop ->
+                    when {
+                        prop.ablType.uppercase() == "INTEGER" || prop.ablType.uppercase() == "INT64" -> {
+                            methodHandlersBlock.append("\t\toQuer:${prop.name} = INTEGER(poRequest:GetQueryParameter(\"${prop.name}\")).\r\n")
+                        }
+                        prop.ablType.uppercase() == "DECIMAL" -> {
+                            methodHandlersBlock.append("\t\toQuer:${prop.name} = DECIMAL(poRequest:GetQueryParameter(\"${prop.name}\")).\r\n")
+                        }
+                        prop.ablType.uppercase() == "LOGICAL" -> {
+                            methodHandlersBlock.append("\t\toQuer:${prop.name} = LOGICAL(poRequest:GetQueryParameter(\"${prop.name}\")).\r\n")
+                        }
+                        else -> {
+                            methodHandlersBlock.append("\t\toQuer:${prop.name} = poRequest:GetQueryParameter(\"${prop.name}\").\r\n")
+                        }
+                    }
+                    if (prop.isRequired) {
+                        methodHandlersBlock.append("\t\tIF oQuer:${prop.name} = ? THEN DO:\r\n")
+                        methodHandlersBlock.append("\t\t\toResponse:StatusCode = 400.\r\n")
+                        methodHandlersBlock.append("\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(\"Missing required parameter: ${prop.name}\").\r\n")
+                        methodHandlersBlock.append("\t\t\tRETURN 0.\r\n")
+                        methodHandlersBlock.append("\t\tEND.\r\n")
+                    }
+                }
+                methodHandlersBlock.append("\r\n")
+
+                // BodySection
+                methodHandlersBlock.append("\t\toBody = NEW ${def.requestDtoClassName}.BodySection().\r\n")
+                methodHandlersBlock.append("\t\tIF VALID-OBJECT(poRequest:Entity) THEN\r\n")
+                methodHandlersBlock.append("\t\t\toBody = CAST(poRequest:Entity, ${def.requestDtoClassName}.BodySection).\r\n")
+                methodHandlersBlock.append("\r\n")
+
+                // Assemble top-level DTO
+                methodHandlersBlock.append("\t\toReq = NEW ${def.requestDtoClassName}().\r\n")
+                methodHandlersBlock.append("\t\tASSIGN\r\n")
+                methodHandlersBlock.append("\t\t\toReq:path  = oPath\r\n")
+                methodHandlersBlock.append("\t\t\toReq:query = oQuer\r\n")
+                methodHandlersBlock.append("\t\t\toReq:body  = oBody.\r\n")
+                methodHandlersBlock.append("\r\n")
             }
-            methodHandlersBlock.append("\t\toResponse = NEW Tatara.Api.ResponseContext().\r\n")
+
+            // === Controller call ===
             methodHandlersBlock.append("\t\t$controllerVar = NEW $ctrlType().\r\n")
+            methodHandlersBlock.append("\t\toResponse = NEW OpenEdge.Web.WebResponse().\r\n")
+
+            // Legacy path: no typed DTOs at all
+            if (!hasRequestDto && !hasResponseDto) {
+                val sz = def.pathParams.size
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE oContext AS Tatara.Api.RequestContext NO-UNDO.\r\n")
+                if (sz > 0) {
+                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cParams AS CHARACTER EXTENT $sz NO-UNDO.\r\n")
+                }
+                methodHandlersBlock.append("\r\n")
+                if (sz > 0) {
+                    def.pathParams.forEachIndexed { i, name ->
+                        methodHandlersBlock.append("\t\tcParams[${i + 1}] = \"$name\".\r\n")
+                    }
+                    methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest, cParams).\r\n")
+                } else {
+                    methodHandlersBlock.append("\t\toContext = Tatara.Api.RequestContextBuilder:FromWebRequest(poRequest).\r\n")
+                }
+                methodHandlersBlock.append("\t\toResponse:StatusCode = 200.\r\n")
+                methodHandlersBlock.append("\t\t$controllerVar:${def.ablMethod}(INPUT oContext, INPUT-OUTPUT oResponse).\r\n")
+                methodHandlersBlock.append("\t\tTatara.Api.ResponseWriter:Write(poRequest, oResponse).\r\n")
+                methodHandlersBlock.append("\t\tRETURN 0.\r\n")
+                methodHandlersBlock.append("\tEND METHOD.")
+                return@forEachIndexed
+            }
+
+            // === Typed handler call with CATCH blocks ===
+            val catchLines = StringBuilder()
+            def.errorResponses.forEach { (code, type) ->
+                catchLines.append("\tCATCH err AS $type:\r\n")
+                catchLines.append("\t\toResponse:StatusCode = $code.\r\n")
+                catchLines.append("\t\toResponse:Entity = err.\r\n")
+                catchLines.append("\t\tRETURN 0.\r\n")
+            }
+            catchLines.append("\tCATCH err AS Tatara.Api.ApiError:\r\n")
+            catchLines.append("\t\toResponse:StatusCode = err:HttpCode.\r\n")
+            catchLines.append("\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(err:Message).\r\n")
+            catchLines.append("\t\tRETURN 0.\r\n")
+            catchLines.append("\tCATCH err AS Progress.Lang.AppError:\r\n")
+            catchLines.append("\t\toResponse:StatusCode = 500.\r\n")
+            catchLines.append("\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(err:GetMessage()).\r\n")
+            catchLines.append("\t\tRETURN 0.\r\n")
+            catchLines.append("\tEND CATCH.\r\n")
+
+            if (hasRequestDto && hasResponseDto) {
+                methodHandlersBlock.append("\t\toResult = $controllerVar:${def.ablMethod}(INPUT oReq)\r\n")
+            } else if (hasRequestDto) {
+                methodHandlersBlock.append("\t\t$controllerVar:${def.ablMethod}(INPUT oReq)\r\n")
+            } else {
+                methodHandlersBlock.append("\t\toResult = $controllerVar:${def.ablMethod}()\r\n")
+            }
+            methodHandlersBlock.append(catchLines)
             methodHandlersBlock.append("\r\n")
-            methodHandlersBlock.append("\t\t$controllerVar:${def.ablMethod}(INPUT oContext, INPUT oResponse).\r\n")
-            methodHandlersBlock.append("\r\n")
-            methodHandlersBlock.append("\t\tTatara.Api.ResponseWriter:Write(poRequest, oResponse).\r\n")
-            methodHandlersBlock.append("\r\n")
+
+            // Success
+            methodHandlersBlock.append("\t\toResponse:StatusCode = 200.\r\n")
+            if (hasResponseDto) {
+                methodHandlersBlock.append("\t\toResponse:Entity = oResult.\r\n")
+            }
             methodHandlersBlock.append("\t\tRETURN 0.\r\n")
             methodHandlersBlock.append("\tEND METHOD.")
         }
 
-        // Build USING block
         val usingBlock = usingSet.joinToString("\r\n") { "USING $it." }
-
         val shimClassName = pathSanitize(routePath).replace("/", ".")
         val fileContent = template
             .replace("{{SHIM_CLASS_NAME}}", shimClassName)
             .replace("{{USING_BLOCK}}", usingBlock)
             .replace("{{METHOD_HANDLERS}}", methodHandlersBlock.toString())
 
-        // Write to <outDir>/<sanitized-path>.cls — strip {param} from filesystem path.
-        // The param placeholders are used ONLY in the .handlers file URI.
         val fsPath = pathSanitize(routePath)
         val outputFile = File(outDir, "$fsPath.cls")
         outputFile.parentFile.mkdirs()
         outputFile.writeText(fileContent)
-
         logger.lifecycle("Rebuilt route shim: /$routePath [${routes.joinToString { it.httpMethod }}]")
     }
 
