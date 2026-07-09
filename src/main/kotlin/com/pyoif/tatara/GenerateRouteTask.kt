@@ -248,12 +248,15 @@ abstract class GenerateRoutesTask : DefaultTask() {
     }
 
     private fun writeShim(routePath: String, routes: List<RouteDef>, outDir: File, template: String) {
+        writeShim(routePath, routes, outDir, template, srcDir.get().asFile)
+    }
+
+    internal fun writeShim(routePath: String, routes: List<RouteDef>, outDir: File, template: String, srcRoot: File) {
         val methodHandlersBlock = StringBuilder()
         val usingSet = mutableSetOf<String>()
         val firstClassName = routes.firstOrNull()?.className ?: ""
         usingSet.add(firstClassName)
 
-        val srcRoot = srcDir.get().asFile
 
         routes.forEachIndexed { index, def ->
             val handleName = "Handle" + def.httpMethod.lowercase().replaceFirstChar { it.uppercase() }
@@ -281,8 +284,9 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE oResult AS ${def.responseDtoClassName} NO-UNDO.\r\n")
             }
             methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse AS OpenEdge.Web.WebResponse NO-UNDO.\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE oWriter AS OpenEdge.Web.WebResponseWriter NO-UNDO.\r\n")
-            methodHandlersBlock.append("\t\tDEFINE VARIABLE iOffset AS INTEGER NO-UNDO.\r\n")
+            if (hasResponseDto) {
+                methodHandlersBlock.append("\t\tDEFINE VARIABLE oJson AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\r\n")
+            }
             if (index == 0 || def.className != routes[0].className) {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE $controllerVar AS $ctrlType NO-UNDO.\r\n")
             }
@@ -442,14 +446,12 @@ abstract class GenerateRoutesTask : DefaultTask() {
             methodHandlersBlock.append("\t\toResponse:StatusCode = 200.\r\n")
             methodHandlersBlock.append("\t\toResponse:ContentType = \"application/json\".\r\n")
             if (hasResponseDto) {
-                methodHandlersBlock.append("\t\toWriter:Open().\r\n")
-                methodHandlersBlock.append("\t\tiOffset = 1.\r\n")
-                methodHandlersBlock.append("\t\tDO WHILE iOffset <= LENGTH(oResult:data):\r\n")
-                methodHandlersBlock.append("\t\t\toWriter:Write(SUBSTRING(oResult:data, iOffset, 32000)).\r\n")
-                methodHandlersBlock.append("\t\t\tiOffset = iOffset + 32000.\r\n")
-                methodHandlersBlock.append("\t\tEND.\r\n")
-                methodHandlersBlock.append("\t\toWriter:Close().\r\n")
+                methodHandlersBlock.append("\t\toJson = NEW Progress.Json.ObjectModel.JsonObject().\r\n")
+                val responseInfo = DtoParser.parse(def.responseDtoClassName!!, srcRoot)
+                emitResponseJson(methodHandlersBlock, "oResult", responseInfo)
+                methodHandlersBlock.append("\t\toResponse:Entity = oJson.\r\n")
             }
+            methodHandlersBlock.append("\t\tTatara.Api.ResponseWriter:Write(poRequest, oResponse).\r\n")
             methodHandlersBlock.append("\t\tRETURN 0.\r\n")
             methodHandlersBlock.append("\tEND METHOD.")
         }
@@ -466,6 +468,35 @@ abstract class GenerateRoutesTask : DefaultTask() {
         outputFile.parentFile.mkdirs()
         outputFile.writeText(fileContent)
         logger.lifecycle("Rebuilt route shim: /$routePath [${routes.joinToString { it.httpMethod }}]")
+    }
+
+    private fun emitResponseJson(
+        sb: StringBuilder,
+        oResultAccessor: String,
+        dtoInfo: DtoParser.DtoInfo
+    ) {
+        dtoInfo.properties.forEach { prop ->
+            val propAccessor = "$oResultAccessor:${prop.name}"
+            if (prop.isDto && prop.nested != null) {
+                val nestedNames = prop.nested.properties.joinToString(", ") { "\"${it.name}\"" }
+                val nestedTypes = prop.nested.properties.joinToString(", ") { "\"${it.ablType}\"" }
+                val nestedIsDto = prop.nested.properties.joinToString(", ") {
+                    if (it.isDto) "yes" else "no"
+                }
+                val n = prop.nested.properties.size
+                sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
+                sb.append("\t\t\t$propAccessor,\r\n")
+                sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedNames],\r\n")
+                sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedTypes],\r\n")
+                sb.append("\t\t\tNEW LOGICAL   EXTENT [$n] [$nestedIsDto])).\r\n")
+            } else {
+                sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
+                sb.append("\t\t\t$propAccessor,\r\n")
+                sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.name}\"],\r\n")
+                sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.ablType}\"],\r\n")
+                sb.append("\t\t\tNEW LOGICAL   EXTENT [1] [no])).\r\n")
+            }
+        }
     }
 
     private fun deleteShim(routePath: String, outDir: File) {
