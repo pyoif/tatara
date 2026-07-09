@@ -208,4 +208,52 @@ class GenerateRouteTaskEmitTest {
         assertTrue(shim.contains("oJson:Add(\"summary\", Tatara.Api.DtoSerializer:ReadTempTableAsObject(oResult:summary))."),
             "shim should call ReadTempTableAsObject for @Object")
     }
+
+    @Test
+    fun `request body deserializes scalar extent from JSON array`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/OrderRequest.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderRequest:
+                    // @Body
+                    DEFINE PUBLIC PROPERTY tags AS CHARACTER EXTENT 3.
+            """.trimIndent())
+        }
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @POST("/svc/orders")
+                    METHOD PUBLIC VOID CreateOrder(INPUT poReq AS com.example.OrderRequest):
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/orders",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/orders",
+                httpMethod = "POST",
+                className = "com.example.OrderController",
+                ablMethod = "CreateOrder",
+                requestDtoClassName = "com.example.OrderRequest"
+            )
+        )
+
+        assertTrue(shim.contains("oJson:GetJsonArray(\"tags\")"), "shim should read JSON array for extent prop. SHIM:\n$shim")
+        assertTrue(shim.contains("oArr_tags:Length"),
+            "shim should loop over JSON array length. SHIM:\n$shim")
+        assertTrue(shim.contains("oReq:tags[i_tags] = oArr_tags:GetCharacter(i_tags)."),
+            "shim should assign each element via GetCharacter. SHIM:\n$shim")
+        assertFalse(shim.contains("oJson:GetCharacter(\"tags\")"),
+            "shim should not use scalar GetCharacter for extent prop")
+    }
 }

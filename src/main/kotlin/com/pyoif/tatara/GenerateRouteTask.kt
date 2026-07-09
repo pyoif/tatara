@@ -357,13 +357,29 @@ abstract class GenerateRoutesTask : DefaultTask() {
                     methodHandlersBlock.append("\t\t\toJson = CAST(poRequest:Entity, Progress.Json.ObjectModel.JsonObject).\r\n")
                     bodyProps.forEach { prop ->
                         methodHandlersBlock.append("\t\t\tIF oJson:Has(\"${prop.name}\") AND NOT oJson:IsNull(\"${prop.name}\") THEN DO:\r\n")
-                        when (prop.ablType.uppercase()) {
-                            "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetInteger(\"${prop.name}\").\r\n")
-                            "DECIMAL" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetDecimal(\"${prop.name}\").\r\n")
-                            "LOGICAL" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetLogical(\"${prop.name}\").\r\n")
-                            "DATETIME", "DATETIME-TZ" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetDatetime(\"${prop.name}\").\r\n")
-                            "LONGCHAR", "CHARACTER" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetCharacter(\"${prop.name}\").\r\n")
-                            else -> methodHandlersBlock.append("\t\t\t\t/* Nested complex objects not fully mapped natively */\r\n")
+                        if (prop.isExtent) {
+                            methodHandlersBlock.append("\t\t\t\tDEFINE VARIABLE oArr_${prop.name} AS Progress.Json.ObjectModel.JsonArray NO-UNDO.\r\n")
+                            methodHandlersBlock.append("\t\t\t\tDEFINE VARIABLE i_${prop.name} AS INTEGER NO-UNDO.\r\n")
+                            methodHandlersBlock.append("\t\t\t\toArr_${prop.name} = oJson:GetJsonArray(\"${prop.name}\").\r\n")
+                            methodHandlersBlock.append("\t\t\t\tDO i_${prop.name} = 1 TO oArr_${prop.name}:Length:\r\n")
+                            when (prop.ablType.uppercase()) {
+                                "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\t\t\toReq:${prop.name}[i_${prop.name}] = oArr_${prop.name}:GetInteger(i_${prop.name}).\r\n")
+                                "DECIMAL" -> methodHandlersBlock.append("\t\t\t\t\toReq:${prop.name}[i_${prop.name}] = oArr_${prop.name}:GetDecimal(i_${prop.name}).\r\n")
+                                "LOGICAL" -> methodHandlersBlock.append("\t\t\t\t\toReq:${prop.name}[i_${prop.name}] = oArr_${prop.name}:GetLogical(i_${prop.name}).\r\n")
+                                "DATETIME", "DATETIME-TZ" -> methodHandlersBlock.append("\t\t\t\t\toReq:${prop.name}[i_${prop.name}] = oArr_${prop.name}:GetDatetime(i_${prop.name}).\r\n")
+                                "LONGCHAR", "CHARACTER" -> methodHandlersBlock.append("\t\t\t\t\toReq:${prop.name}[i_${prop.name}] = oArr_${prop.name}:GetCharacter(i_${prop.name}).\r\n")
+                                else -> methodHandlersBlock.append("\t\t\t\t\t/* extent of unsupported type */\r\n")
+                            }
+                            methodHandlersBlock.append("\t\t\t\tEND.\r\n")
+                        } else {
+                            when (prop.ablType.uppercase()) {
+                                "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetInteger(\"${prop.name}\").\r\n")
+                                "DECIMAL" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetDecimal(\"${prop.name}\").\r\n")
+                                "LOGICAL" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetLogical(\"${prop.name}\").\r\n")
+                                "DATETIME", "DATETIME-TZ" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetDatetime(\"${prop.name}\").\r\n")
+                                "LONGCHAR", "CHARACTER" -> methodHandlersBlock.append("\t\t\t\toReq:${prop.name} = oJson:GetCharacter(\"${prop.name}\").\r\n")
+                                else -> methodHandlersBlock.append("\t\t\t\t/* Nested complex objects not fully mapped natively */\r\n")
+                            }
                         }
                         methodHandlersBlock.append("\t\t\tEND.\r\n")
                         if (prop.isRequired) {
