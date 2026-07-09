@@ -143,4 +143,72 @@ class GenerateRouteTaskEmitTest {
         assertFalse(shim.contains("oResponse:Entity = errCustom"), "should not assign custom error to Entity")
         assertFalse(shim.contains("oResponse:Entity = NEW Tatara.Api.ErrorResponse"), "should not construct ErrorResponse")
     }
+
+    @Test
+    fun `emits inline Add for @Array temp-table prop`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/orders",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/orders",
+                httpMethod = "GET",
+                className = "com.example.OrderController",
+                ablMethod = "GetOrder",
+                responseDtoClassName = "com.example.Order"
+            )
+        )
+
+        assertTrue(shim.contains("oJson:Add(\"items\", oResult:items)."),
+            "shim should emit inline Add for @Array temp-table prop")
+        assertFalse(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"),
+            "shim should not call DtoSerializer for temp-table prop")
+    }
+
+    @Test
+    fun `emits Read path for @Object temp-table prop`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Object
+                    DEFINE PUBLIC PROPERTY summary AS HANDLE.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/orders",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/orders",
+                httpMethod = "GET",
+                className = "com.example.OrderController",
+                ablMethod = "GetOrder",
+                responseDtoClassName = "com.example.Order"
+            )
+        )
+
+        assertTrue(shim.contains("oJson:Add(\"summary\", NEW Progress.Json.ObjectModel.JsonObject())."),
+            "shim should construct empty JsonObject for @Object")
+        assertTrue(shim.contains("oJson:GetJsonObject(\"summary\"):Read(oResult:summary)."),
+            "shim should call Read for @Object")
+    }
 }

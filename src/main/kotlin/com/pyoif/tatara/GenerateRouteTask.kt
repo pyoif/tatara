@@ -487,24 +487,39 @@ abstract class GenerateRoutesTask : DefaultTask() {
     ) {
         dtoInfo.properties.forEach { prop ->
             val propAccessor = "$oResultAccessor:${prop.name}"
-            if (prop.isDto && prop.nested != null) {
-                val nestedNames = prop.nested.properties.joinToString(", ") { "\"${it.name}\"" }
-                val nestedTypes = prop.nested.properties.joinToString(", ") { "\"${it.ablType}\"" }
-                val nestedIsDto = prop.nested.properties.joinToString(", ") {
-                    if (it.isDto) "yes" else "no"
+            when {
+                prop.isTempTable -> {
+                    when (prop.tempTableKind) {
+                        DtoParser.TempTableKind.ARRAY -> {
+                            sb.append("\t\toJson:Add(\"${prop.name}\", $propAccessor).\r\n")
+                        }
+                        DtoParser.TempTableKind.OBJECT -> {
+                            sb.append("\t\toJson:Add(\"${prop.name}\", NEW Progress.Json.ObjectModel.JsonObject()).\r\n")
+                            sb.append("\t\toJson:GetJsonObject(\"${prop.name}\"):Read($propAccessor).\r\n")
+                        }
+                        DtoParser.TempTableKind.NONE -> { /* unreachable */ }
+                    }
                 }
-                val n = prop.nested.properties.size
-                sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
-                sb.append("\t\t\t$propAccessor,\r\n")
-                sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedNames],\r\n")
-                sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedTypes],\r\n")
-                sb.append("\t\t\tNEW LOGICAL   EXTENT [$n] [$nestedIsDto])).\r\n")
-            } else {
-                sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
-                sb.append("\t\t\t$propAccessor,\r\n")
-                sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.name}\"],\r\n")
-                sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.ablType}\"],\r\n")
-                sb.append("\t\t\tNEW LOGICAL   EXTENT [1] [no])).\r\n")
+                prop.isDto && prop.nested != null -> {
+                    val nestedNames = prop.nested.properties.joinToString(", ") { "\"${it.name}\"" }
+                    val nestedTypes = prop.nested.properties.joinToString(", ") { "\"${it.ablType}\"" }
+                    val nestedIsDto = prop.nested.properties.joinToString(", ") {
+                        if (it.isDto) "yes" else "no"
+                    }
+                    val n = prop.nested.properties.size
+                    sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
+                    sb.append("\t\t\t$propAccessor,\r\n")
+                    sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedNames],\r\n")
+                    sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedTypes],\r\n")
+                    sb.append("\t\t\tNEW LOGICAL   EXTENT [$n] [$nestedIsDto])).\r\n")
+                }
+                else -> {
+                    sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
+                    sb.append("\t\t\t$propAccessor,\r\n")
+                    sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.name}\"],\r\n")
+                    sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.ablType}\"],\r\n")
+                    sb.append("\t\t\tNEW LOGICAL   EXTENT [1] [no])).\r\n")
+                }
             }
         }
     }
