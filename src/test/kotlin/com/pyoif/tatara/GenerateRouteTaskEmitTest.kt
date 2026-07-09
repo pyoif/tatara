@@ -172,8 +172,12 @@ class GenerateRouteTaskEmitTest {
             )
         )
 
-        assertTrue(shim.contains("oJson:Add(\"items\", oResult:items)."),
-            "shim should emit inline Add for @Array temp-table prop")
+        assertTrue(shim.contains("oJson:Add(\"items\", NEW Progress.Json.ObjectModel.JsonArray())."),
+            "shim should construct JsonArray for @Array")
+        assertTrue(shim.contains("oJson:GetJsonArray(\"items\"):Read(oResult:items)."),
+            "shim should call GetJsonArray:Read for @Array")
+        assertFalse(shim.contains("oJson:Add(\"items\", oResult:items)."),
+            "shim should not pass handle directly to Add (would stringify ref)")
         assertFalse(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"),
             "shim should not call DtoSerializer for temp-table prop")
     }

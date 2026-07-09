@@ -491,7 +491,8 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 prop.isTempTable -> {
                     when (prop.tempTableKind) {
                         DtoParser.TempTableKind.ARRAY -> {
-                            sb.append("\t\toJson:Add(\"${prop.name}\", $propAccessor).\r\n")
+                            sb.append("\t\toJson:Add(\"${prop.name}\", NEW Progress.Json.ObjectModel.JsonArray()).\r\n")
+                            sb.append("\t\toJson:GetJsonArray(\"${prop.name}\"):Read($propAccessor).\r\n")
                         }
                         DtoParser.TempTableKind.OBJECT -> {
                             sb.append("\t\toJson:Add(\"${prop.name}\", NEW Progress.Json.ObjectModel.JsonObject()).\r\n")
