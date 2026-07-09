@@ -7,7 +7,7 @@ object ShimEmitHelper {
 
     fun createTask(): GenerateRoutesTask {
         val project = ProjectBuilder.builder().build()
-        return project.tasks.create("testRoutes", GenerateRoutesTask::class.java)
+        return project.tasks.register("testRoutes", GenerateRoutesTask::class.java).get()
     }
 
     fun invokeWriteShim(
