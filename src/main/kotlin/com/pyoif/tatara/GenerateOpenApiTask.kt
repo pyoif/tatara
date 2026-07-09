@@ -161,7 +161,8 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val requiredArr = JsonArray()
         dto.properties.forEach { p ->
             if (p.isTempTable) {
-                val inlineTt = DtoParser.parseInlineTempTable(dtoClass, pkgRoot)
+                val expectedTtName = "tt" + p.name.replaceFirstChar { it.uppercase() }
+                val inlineTt = DtoParser.parseInlineTempTableByName(dtoClass, pkgRoot, expectedTtName)
                 val desc = when (p.tempTableKind) {
                     DtoParser.TempTableKind.ARRAY -> "ABL temp-table; field-level schema from inline DEFINE TEMP-TABLE"
                     DtoParser.TempTableKind.OBJECT -> "ABL temp-table (single-row); field-level schema from inline DEFINE TEMP-TABLE"

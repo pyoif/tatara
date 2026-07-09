@@ -302,4 +302,79 @@ class GenerateOpenApiTaskTest {
         assertTrue(swagger.contains("\"additionalProperties\": true"),
             "should fall back to generic schema. Got:\n$swagger")
     }
+
+    @Test
+    fun `HANDLE prop maps to tt-prefixed temp-table by name`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttData FIELD total AS DECIMAL.
+                    // @Array
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"total\""), "should expose total field from ttData. Got:\n$swagger")
+        assertFalse(swagger.contains("\"additionalProperties\": true"),
+            "should not fall back to generic. Got:\n$swagger")
+    }
+
+    @Test
+    fun `HANDLE prop with mismatched temp-table name falls back to generic`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttFoo FIELD x AS INTEGER.
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"additionalProperties\": true"),
+            "should fall back to generic when no name match. Got:\n$swagger")
+        assertFalse(swagger.contains("\"x\""),
+            "should not leak unrelated TT fields. Got:\n$swagger")
+    }
 }
