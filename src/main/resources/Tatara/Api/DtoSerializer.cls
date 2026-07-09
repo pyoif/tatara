@@ -16,7 +16,7 @@ CLASS Tatara.Api.DtoSerializer:
         DEFINE VARIABLE i         AS INTEGER                          NO-UNDO.
         DEFINE VARIABLE cType     AS CHARACTER                        NO-UNDO.
         DEFINE VARIABLE cVal      AS CHARACTER                        NO-UNDO.
-        DEFINE VARIABLE oPropInfo AS Progress.Lang.Class.Property     NO-UNDO.
+        DEFINE VARIABLE oPropInfo AS HANDLE                              NO-UNDO.
 
         oJson = NEW JsonObject().
 
