@@ -9,15 +9,8 @@ import java.nio.file.Path
 class GenerateRouteTaskEmitTest {
 
     @Test
-    fun `emits DtoSerializer call for flat response DTO`(@TempDir tmp: Path) {
+    fun `emits WriteJsonObject call for flat response DTO`(@TempDir tmp: Path) {
         val src = tmp.resolve("src").toFile()
-        File(src, "com/example/Address.cls").apply {
-            parentFile.mkdirs()
-            writeText("""
-                CLASS com.example.Address:
-                    DEFINE PUBLIC PROPERTY city AS CHARACTER.
-            """.trimIndent())
-        }
         File(src, "com/example/User.cls").apply {
             parentFile.mkdirs()
             writeText("""
@@ -45,17 +38,69 @@ class GenerateRouteTaskEmitTest {
 
         assertTrue(shim.contains("oJson:Add(\"id\", oResult:id)."), "shim should emit direct Add for scalar id")
         assertTrue(shim.contains("oJson:Add(\"name\", oResult:name)."), "shim should emit direct Add for scalar name")
-        assertTrue(shim.contains("oJson:Write(oMemStream)"), "shim should write oJson to MemoryOutputStream")
-        assertTrue(shim.contains("mPayload = oMemStream:Data"), "shim should extract MEMPTR from stream")
-        assertTrue(shim.contains("oWriter:Write(mPayload)"), "shim should write MEMPTR to oWriter")
-        assertTrue(shim.contains("oResponse:ContentType = \"application/json\""), "shim should set content type")
-        assertFalse(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"), "shim should not call removed ToJsonObject method")
+        assertTrue(shim.contains("Tatara.Api.ResponseWriter:WriteJsonObject(oResponse, oJson)."),
+            "shim should call WriteJsonObject helper")
+        // Negative assertions: MEMPTR dance must be gone
+        assertFalse(shim.contains("oWriter:Open()"), "shim should not open oWriter manually")
+        assertFalse(shim.contains("oMemStream"), "shim should not reference oMemStream")
+        assertFalse(shim.contains("mPayload"), "shim should not reference mPayload")
+        assertFalse(shim.contains("oJson:Write(oMemStream)"), "shim should not serialize oJson to stream manually")
+        assertFalse(shim.contains("oWriter:Write(mPayload)"), "shim should not write MEMPTR manually")
+        assertFalse(shim.contains("SET-SIZE(mPayload)"), "shim should not free MEMPTR manually")
         assertFalse(shim.contains("oResult:data"), "shim should NOT chunk-write oResult:data")
-        assertFalse(shim.contains("oResponse:Entity = oJson"), "shim should not set Entity (writes via oWriter)")
     }
 
     @Test
-    fun `emits recursive DtoSerializer call for nested response DTO`(@TempDir tmp: Path) {
+    fun `emits WriteError calls for error catches`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/NotFoundError.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.NotFoundError INHERITS Progress.Lang.AppError:
+                END CLASS.
+            """.trimIndent())
+        }
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/users/{id}",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/users/{id}",
+                httpMethod = "GET",
+                className = "com.example.UserController",
+                ablMethod = "GetUser",
+                pathParams = listOf("id"),
+                responseDtoClassName = "com.example.User",
+                errorResponses = mapOf(404 to "com.example.NotFoundError")
+            )
+        )
+
+        assertTrue(shim.contains("Tatara.Api.ResponseWriter:WriteError(oResponse, 404, errCustom:GetMessage(1))."),
+            "shim should call WriteError for custom error with status 404")
+        assertTrue(shim.contains("Tatara.Api.ResponseWriter:WriteError(oResponse, errApi:HttpCode, errApi:GetMessage(1))."),
+            "shim should call WriteError for ApiError with HttpCode status")
+        assertTrue(shim.contains("Tatara.Api.ResponseWriter:WriteError(oResponse, 500, errApp:GetMessage(1))."),
+            "shim should call WriteError for AppError with status 500")
+        // Negative: shim should not set StatusCode before the error helper call
+        assertFalse(shim.contains("oResponse:StatusCode = errApi:HttpCode."),
+            "shim should not set StatusCode for ApiError (helper does it)")
+        assertFalse(shim.contains("oResponse:StatusCode = 500."),
+            "shim should not set StatusCode for AppError (helper does it)")
+    }
+
+    @Test
+    fun `emits recursive sub-objects for nested DTO`(@TempDir tmp: Path) {
         val src = tmp.resolve("src").toFile()
         File(src, "com/example/Address.cls").apply {
             parentFile.mkdirs()
@@ -91,67 +136,15 @@ class GenerateRouteTaskEmitTest {
         )
 
         assertTrue(shim.contains("oSub_addr"), "shim should define sub-object variable for nested DTO")
-        assertTrue(shim.contains("oSub_addr:Add(\"city\", oResult:addr:city)."), "shim should inline nested DTO prop with chained accessor onto sub-object")
-        assertTrue(shim.contains("oSub_addr:Add(\"zip\", oResult:addr:zip)."), "shim should inline nested DTO prop with chained accessor onto sub-object")
+        assertTrue(shim.contains("oSub_addr:Add(\"city\", oResult:addr:city)."), "shim should inline nested DTO prop with chained accessor")
+        assertTrue(shim.contains("oSub_addr:Add(\"zip\", oResult:addr:zip)."), "shim should inline nested DTO prop with chained accessor")
         assertTrue(shim.contains("oJson:Add(\"addr\", oSub_addr)."), "shim should attach sub-object to parent under prop name")
-        // Sub-object nests into parent JsonObject; parent oJson:Write(oMemStream) serializes the whole tree
-        assertTrue(shim.contains("oJson:Write(oMemStream)"), "shim should serialize top-level oJson to MemoryOutputStream")
+        assertTrue(shim.contains("Tatara.Api.ResponseWriter:WriteJsonObject(oResponse, oJson)."),
+            "shim should call WriteJsonObject helper for nested DTO")
     }
 
     @Test
-    fun `opens oWriter once at top and writes error message to it`(@TempDir tmp: Path) {
-        val src = tmp.resolve("src").toFile()
-        File(src, "com/example/NotFoundError.cls").apply {
-            parentFile.mkdirs()
-            writeText("""
-                CLASS com.example.NotFoundError INHERITS Progress.Lang.AppError:
-                END CLASS.
-            """.trimIndent())
-        }
-        File(src, "com/example/User.cls").apply {
-            parentFile.mkdirs()
-            writeText("""
-                CLASS com.example.User:
-                    DEFINE PUBLIC PROPERTY id AS INTEGER.
-            """.trimIndent())
-        }
-
-        val genDir = tmp.resolve("gen").toFile()
-        val task = ShimEmitHelper.createTask()
-        val shim = ShimEmitHelper.invokeWriteShim(
-            task = task,
-            srcDir = src,
-            genDir = genDir,
-            routePath = "svc/users/{id}",
-            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
-                routePath = "svc/users/{id}",
-                httpMethod = "GET",
-                className = "com.example.UserController",
-                ablMethod = "GetUser",
-                pathParams = listOf("id"),
-                responseDtoClassName = "com.example.User",
-                errorResponses = mapOf(404 to "com.example.NotFoundError")
-            )
-        )
-
-        // oWriter:Open() called exactly once, right after initialization
-        assertEquals(1, shim.split("oWriter:Open()").size - 1, "oWriter:Open() should appear exactly once")
-        val openIdx = shim.indexOf("oWriter:Open()")
-        val initIdx = shim.indexOf("oWriter = NEW OpenEdge.Web.WebResponseWriter")
-        assertTrue(openIdx > initIdx, "oWriter:Open() should come after oWriter initialization")
-        assertTrue(openIdx - initIdx < 200, "oWriter:Open() should be right after init, not far away")
-
-        // Error path writes message via oJson:Write(oMemStream) + oWriter:Write(mPayload)
-        assertTrue(shim.contains("oJson:Add(\"error\", errApi:GetMessage(1))"), "ApiError catch should add error message")
-        assertTrue(shim.contains("oJson:Add(\"error\", errApp:GetMessage(1))"), "AppError catch should add error message")
-        assertTrue(shim.contains("oJson:Add(\"error\", errCustom:GetMessage(1))"), "Custom error catch should add error message")
-        assertTrue(shim.contains("errApi:HttpCode"), "ApiError should set status from HttpCode")
-        assertFalse(shim.contains("oResponse:Entity = errCustom"), "should not assign custom error to Entity")
-        assertFalse(shim.contains("oResponse:Entity = NEW Tatara.Api.ErrorResponse"), "should not construct ErrorResponse")
-    }
-
-    @Test
-    fun `emits inline Add for @Array temp-table prop`(@TempDir tmp: Path) {
+    fun `emits ReadTempTableAsArray for @Array temp-table prop`(@TempDir tmp: Path) {
         val src = tmp.resolve("src").toFile()
         File(src, "com/example/Order.cls").apply {
             parentFile.mkdirs()
@@ -180,14 +173,12 @@ class GenerateRouteTaskEmitTest {
 
         assertTrue(shim.contains("oJson:Add(\"items\", Tatara.Api.DtoSerializer:ReadTempTableAsArray(oResult:items))."),
             "shim should call ReadTempTableAsArray for @Array")
-        assertFalse(shim.contains("oJson:GetJsonArray"),
-            "shim should not inline JsonArray:Read for @Array (moved to DtoSerializer)")
-        assertFalse(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"),
-            "shim should not call ToJsonObject for temp-table prop")
+        assertTrue(shim.contains("Tatara.Api.ResponseWriter:WriteJsonObject(oResponse, oJson)."),
+            "shim should call WriteJsonObject helper for @Array response")
     }
 
     @Test
-    fun `emits Read path for @Object temp-table prop`(@TempDir tmp: Path) {
+    fun `emits ReadTempTableAsObject for @Object temp-table prop`(@TempDir tmp: Path) {
         val src = tmp.resolve("src").toFile()
         File(src, "com/example/Order.cls").apply {
             parentFile.mkdirs()
@@ -216,7 +207,5 @@ class GenerateRouteTaskEmitTest {
 
         assertTrue(shim.contains("oJson:Add(\"summary\", Tatara.Api.DtoSerializer:ReadTempTableAsObject(oResult:summary))."),
             "shim should call ReadTempTableAsObject for @Object")
-        assertFalse(shim.contains("oJson:GetJsonObject"),
-            "shim should not inline JsonObject:Read for @Object (moved to DtoSerializer)")
     }
 }
