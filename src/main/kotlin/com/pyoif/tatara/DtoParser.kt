@@ -10,7 +10,9 @@ object DtoParser {
         val ablType: String,
         val isRequired: Boolean = false,
         val location: ParamLocation = ParamLocation.UNKNOWN,
-        val isExtent: Boolean = false
+        val isExtent: Boolean = false,
+        val isDto: Boolean = false,
+        val nested: DtoInfo? = null
     )
 
     data class DtoInfo(
@@ -26,13 +28,25 @@ object DtoParser {
     )
     private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body)""")
 
-    fun parse(dtoClassName: String, srcRoot: File): DtoInfo {
+    fun parse(
+        dtoClassName: String,
+        srcRoot: File,
+        visited: MutableSet<String> = mutableSetOf()
+    ): DtoInfo {
         val file = resolveFile(dtoClassName, srcRoot) ?: return DtoInfo.EMPTY
+        visited.add(dtoClassName)
+
         val properties = mutableListOf<DtoProperty>()
         val lines = file.readText().lines()
 
         var isReq = false
         var loc = ParamLocation.UNKNOWN
+
+        val primitives = setOf(
+            "CHARACTER", "LONGCHAR", "INTEGER", "INT64", "DECIMAL",
+            "LOGICAL", "DATE", "DATETIME", "DATETIME-TZ",
+            "HANDLE", "RAW", "MEMPTR", "BLOB", "CLOB"
+        )
 
         for (line in lines) {
             val trimmed = line.trim()
@@ -46,12 +60,33 @@ object DtoParser {
             }
 
             propDefRegex.find(trimmed)?.let { m ->
+                val name = m.groupValues[1]
+                val ablType = m.groupValues[2]
+                val isExtent = m.groups[3]?.value != null
+
+                val upperType = ablType.uppercase()
+                val isScalar = primitives.contains(upperType) || upperType == "VOID"
+
+                var isDto = false
+                var nested: DtoInfo? = null
+                if (!isScalar) {
+                    if (ablType in visited) {
+                        isDto = false
+                        nested = null
+                    } else {
+                        isDto = true
+                        nested = parse(ablType, srcRoot, visited)
+                    }
+                }
+
                 properties.add(DtoProperty(
-                    name = m.groupValues[1],
-                    ablType = m.groupValues[2],
+                    name = name,
+                    ablType = ablType,
                     isRequired = isReq,
                     location = loc,
-                    isExtent = m.groups[3]?.value != null
+                    isExtent = isExtent,
+                    isDto = isDto,
+                    nested = nested
                 ))
                 // Reset @Required only — location sticks until next @Path/@Query/@Body
                 isReq = false
