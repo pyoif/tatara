@@ -143,6 +143,54 @@ class DtoParserTest {
     }
 
     @Test
+    fun `captures fixed EXTENT size`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY tags AS CHARACTER EXTENT 5.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isExtent)
+        assertEquals(5, prop.extentSize)
+    }
+
+    @Test
+    fun `captures unfixed EXTENT with null size`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY tags AS CHARACTER EXTENT.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isExtent)
+        assertNull(prop.extentSize)
+    }
+
+    @Test
+    fun `non-extent prop has null size`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY name AS CHARACTER.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertFalse(prop.isExtent)
+        assertNull(prop.extentSize)
+    }
+
+    @Test
     fun `HANDLE prop without annotation is not a temp-table`(@TempDir tmp: Path) {
         val src = tmp.toFile()
         File(src, "com/example/User.cls").apply {

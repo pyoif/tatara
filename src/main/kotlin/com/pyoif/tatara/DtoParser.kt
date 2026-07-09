@@ -12,6 +12,7 @@ object DtoParser {
         val isRequired: Boolean = false,
         val location: ParamLocation = ParamLocation.UNKNOWN,
         val isExtent: Boolean = false,
+        val extentSize: Int? = null,
         val isDto: Boolean = false,
         val nested: DtoInfo? = null,
         val isTempTable: Boolean = false,
@@ -70,6 +71,7 @@ object DtoParser {
                 val name = m.groupValues[1]
                 val ablType = m.groupValues[2]
                 val isExtent = m.groups[3]?.value != null
+                val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
 
                 var isDto = false
                 var nested: DtoInfo? = null
@@ -93,6 +95,7 @@ object DtoParser {
                     isRequired = isReq,
                     location = loc,
                     isExtent = isExtent,
+                    extentSize = extentSize,
                     isDto = isDto,
                     nested = nested,
                     isTempTable = isTempTable,
