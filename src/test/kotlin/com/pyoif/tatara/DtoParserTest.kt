@@ -259,4 +259,49 @@ class DtoParserTest {
         assertTrue(field.isExtent)
         assertEquals(3, field.extentSize)
     }
+
+    @Test
+    fun `parseInlineTempTableByName returns matching temp-table`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems FIELD orderId AS INTEGER.
+                    DEFINE TEMP-TABLE ttOther FIELD x AS INTEGER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTableByName("com.example.Order", src, "ttItems")
+        assertNotNull(tt)
+        assertEquals("ttItems", tt!!.bufferName)
+        assertEquals("orderId", tt.fields.properties[0].name)
+    }
+
+    @Test
+    fun `parseInlineTempTableByName returns null when name not found`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems FIELD orderId AS INTEGER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTableByName("com.example.Order", src, "ttNotPresent")
+        assertNull(tt)
+    }
+
+    @Test
+    fun `parseInlineTempTableByName returns null when no temp-table`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTableByName("com.example.User", src, "ttAnything")
+        assertNull(tt)
+    }
 }

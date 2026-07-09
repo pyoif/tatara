@@ -121,26 +121,42 @@ object DtoParser {
         return DtoInfo(properties)
     }
 
-    fun parseInlineTempTable(dtoClassName: String, srcRoot: File): InlineTempTable? {
-        val file = resolveFile(dtoClassName, srcRoot) ?: return null
+    fun parseInlineTempTable(dtoClassName: String, srcRoot: File): InlineTempTable? =
+        parseAllInlineTempTables(dtoClassName, srcRoot).firstOrNull()
+
+    fun parseInlineTempTableByName(
+        dtoClassName: String,
+        srcRoot: File,
+        bufferName: String
+    ): InlineTempTable? = parseAllInlineTempTables(dtoClassName, srcRoot)
+        .firstOrNull { it.bufferName == bufferName }
+
+    private fun parseAllInlineTempTables(
+        dtoClassName: String,
+        srcRoot: File
+    ): List<InlineTempTable> {
+        val file = resolveFile(dtoClassName, srcRoot) ?: return emptyList()
         val content = file.readText()
-        val ttMatch = ttDefRegex.find(content) ?: return null
-        val bufferName = ttMatch.groupValues[1]
-        val body = ttMatch.groupValues[2]
-        val properties = mutableListOf<DtoProperty>()
-        fieldDefRegex.findAll(body).forEach { m ->
-            val name = m.groupValues[1]
-            val ablType = m.groupValues[2]
-            val isExtent = m.groups[3]?.value != null
-            val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
-            properties.add(DtoProperty(
-                name = name,
-                ablType = ablType,
-                isExtent = isExtent,
-                extentSize = extentSize
-            ))
+        val results = mutableListOf<InlineTempTable>()
+        ttDefRegex.findAll(content).forEach { ttMatch ->
+            val bufferName = ttMatch.groupValues[1]
+            val body = ttMatch.groupValues[2]
+            val properties = mutableListOf<DtoProperty>()
+            fieldDefRegex.findAll(body).forEach { m ->
+                val name = m.groupValues[1]
+                val ablType = m.groupValues[2]
+                val isExtent = m.groups[3]?.value != null
+                val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
+                properties.add(DtoProperty(
+                    name = name,
+                    ablType = ablType,
+                    isExtent = isExtent,
+                    extentSize = extentSize
+                ))
+            }
+            results.add(InlineTempTable(bufferName, DtoInfo(properties)))
         }
-        return InlineTempTable(bufferName, DtoInfo(properties))
+        return results
     }
 
     private fun resolveFile(dtoClassName: String, srcRoot: File): File? {
