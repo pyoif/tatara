@@ -87,8 +87,8 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             addProperty("type", "object")
             add("properties", JsonObject().apply {
                 add("error", JsonObject().apply { addProperty("type", "string") })
-                add("message", JsonObject().apply { addProperty("type", "string") })
             })
+            add("required", JsonArray().apply { add("error") })
         })
 
         // Second pass: build paths
@@ -377,14 +377,13 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         }
         responses.add("200", resp200)
 
-        route.errorResponses.forEach { (code, type) ->
-            val typeName = type.substringAfterLast('.')
+        route.errorResponses.forEach { (code, _) ->
             responses.add(code.toString(), JsonObject().apply {
                 addProperty("description", httpStatusDescription(code))
                 add("content", JsonObject().apply {
                     add("application/json", JsonObject().apply {
                         add("schema", JsonObject().apply {
-                            addProperty("\$ref", "#/components/schemas/$typeName")
+                            addProperty("\$ref", "#/components/schemas/ErrorResponse")
                         })
                     })
                 })
