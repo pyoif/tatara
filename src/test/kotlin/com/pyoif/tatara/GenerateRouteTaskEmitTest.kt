@@ -46,8 +46,10 @@ class GenerateRouteTaskEmitTest {
         assertTrue(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"), "shim should call DtoSerializer")
         assertTrue(shim.contains("\"id\""),  "shim should reference id prop")
         assertTrue(shim.contains("\"name\""),"shim should reference name prop")
-        assertTrue(shim.contains("oResponse:Entity = oJson"), "shim should set Entity to oJson")
+        assertTrue(shim.contains("oJson:Write(oWriter)"), "shim should write oJson to oWriter")
+        assertTrue(shim.contains("oResponse:ContentType = \"application/json\""), "shim should set content type")
         assertFalse(shim.contains("oResult:data"), "shim should NOT chunk-write oResult:data")
+        assertFalse(shim.contains("oResponse:Entity = oJson"), "shim should not set Entity (writes via oWriter)")
     }
 
     @Test
