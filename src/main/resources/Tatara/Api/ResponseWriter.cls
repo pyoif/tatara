@@ -10,22 +10,17 @@ CLASS Tatara.Api.ResponseWriter:
         INPUT poResponse AS OpenEdge.Web.WebResponse,
         INPUT poJson     AS Progress.Json.ObjectModel.JsonObject):
 
-        DEFINE VARIABLE oWriter    AS OpenEdge.Web.WebResponseWriter NO-UNDO.
-        DEFINE VARIABLE oMemStream AS MemoryOutputStream              NO-UNDO.
-        DEFINE VARIABLE mPayload   AS MEMPTR                          NO-UNDO.
+        DEFINE VARIABLE oWriter    AS WebResponseWriter               NO-UNDO.
+        DEFINE VARIABLE lcJson    AS LONGCHAR NO-UNDO.
 
         poResponse:StatusCode    = 200.
         poResponse:ContentType   = "application/json".
 
-        oWriter    = NEW OpenEdge.Web.WebResponseWriter(poResponse).
-        oMemStream = NEW MemoryOutputStream().
+        oWriter    = NEW WebResponseWriter(poResponse).
         oWriter:Open().
-        poJson:Write(oMemStream).
-        mPayload = oMemStream:Data.
-        oWriter:Write(mPayload).
+        poJson:Write(lcJson).
+        oWriter:Write(lcJson).
         oWriter:Close().
-        SET-SIZE(mPayload) = 0.
-        DELETE OBJECT oMemStream.
     END METHOD.
 
     METHOD PUBLIC STATIC VOID WriteError(
@@ -33,25 +28,18 @@ CLASS Tatara.Api.ResponseWriter:
         INPUT piStatusCode   AS INTEGER,
         INPUT pcErrorMessage AS CHARACTER):
 
-        DEFINE VARIABLE oWriter    AS OpenEdge.Web.WebResponseWriter NO-UNDO.
-        DEFINE VARIABLE oMemStream AS MemoryOutputStream              NO-UNDO.
-        DEFINE VARIABLE mPayload   AS MEMPTR                          NO-UNDO.
-        DEFINE VARIABLE oJson      AS JsonObject                       NO-UNDO.
+        DEFINE VARIABLE oWriter    AS WebResponseWriter NO-UNDO.
+        DEFINE VARIABLE oJson      AS Progress.Json.ObjectModel.JsonObject NO-UNDO.
 
         poResponse:StatusCode = piStatusCode.
 
         oJson = NEW JsonObject().
         oJson:Add("error", pcErrorMessage).
 
-        oWriter    = NEW OpenEdge.Web.WebResponseWriter(poResponse).
-        oMemStream = NEW MemoryOutputStream().
+        oWriter    = NEW WebResponseWriter(poResponse).
         oWriter:Open().
-        oJson:Write(oMemStream).
-        mPayload = oMemStream:Data.
-        oWriter:Write(mPayload).
+        oWriter:Write(oJson:GetJsonText()).
         oWriter:Close().
-        SET-SIZE(mPayload) = 0.
-        DELETE OBJECT oMemStream.
     END METHOD.
 
 END CLASS.

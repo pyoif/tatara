@@ -1,14 +1,14 @@
 {
   "workflow": {
     "phases": {
-      "brainstorm": "active",
+      "brainstorm": "pending",
       "plan": "pending",
-      "execute": "pending",
+      "execute": "active",
       "verify": "pending",
       "review": "pending",
       "finish": "pending"
     },
-    "currentPhase": "brainstorm",
+    "currentPhase": "execute",
     "artifacts": {
       "brainstorm": null,
       "plan": null,
@@ -29,12 +29,7 @@
   "tdd": {
     "phase": "idle",
     "testFiles": [],
-    "sourceFiles": [
-      "D:/project/tatara/src/main/kotlin/com/pyoif/tatara/GenerateRouteTask.kt",
-      "D:/project/tatara/src/main/kotlin/com/pyoif/tatara/DtoParser.kt",
-      "D:/project/tatara/src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt",
-      "D:/project/tatara/src/main/kotlin/com/pyoif/tatara/TataraPlugin.kt"
-    ],
+    "sourceFiles": [],
     "redVerificationPending": false
   },
   "debug": {

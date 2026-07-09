@@ -291,6 +291,7 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE $controllerVar AS $ctrlType NO-UNDO.\r\n")
             }
             methodHandlersBlock.append("\r\n")
+            methodHandlersBlock.append("\t\toResponse = NEW OpenEdge.Web.WebResponse().\r\n")
 
             if (hasRequestDto) {
                 methodHandlersBlock.append("\t\toReq = NEW ${def.requestDtoClassName}().\r\n")
@@ -342,8 +343,7 @@ abstract class GenerateRoutesTask : DefaultTask() {
                         methodHandlersBlock.append("\t\tEND.\r\n")
                         if (prop.isRequired) {
                             methodHandlersBlock.append("\t\tELSE DO:\r\n")
-                            methodHandlersBlock.append("\t\t\toResponse:StatusCode = 400.\r\n")
-                            methodHandlersBlock.append("\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(\"Missing required query parameter: ${prop.name}\").\r\n")
+                            methodHandlersBlock.append("\t\t\t\tTatara.Api.ResponseWriter:WriteError(oResponse, 400, \"Missing required body parameter: ${prop.name}\").\r\n")
                             methodHandlersBlock.append("\t\t\tRETURN 0.\r\n")
                             methodHandlersBlock.append("\t\tEND.\r\n")
                         }
@@ -368,8 +368,7 @@ abstract class GenerateRoutesTask : DefaultTask() {
                         methodHandlersBlock.append("\t\t\tEND.\r\n")
                         if (prop.isRequired) {
                             methodHandlersBlock.append("\t\t\tELSE DO:\r\n")
-                            methodHandlersBlock.append("\t\t\t\toResponse:StatusCode = 400.\r\n")
-                            methodHandlersBlock.append("\t\t\t\toResponse:Entity = NEW Tatara.Api.ErrorResponse(\"Missing required body parameter: ${prop.name}\").\r\n")
+                            methodHandlersBlock.append("\t\t\t\tTatara.Api.ResponseWriter:WriteError(oResponse, 400, \"Missing required body parameter: ${prop.name}\").\r\n")
                             methodHandlersBlock.append("\t\t\t\tRETURN 0.\r\n")
                             methodHandlersBlock.append("\t\t\tEND.\r\n")
                         }
@@ -390,7 +389,6 @@ abstract class GenerateRoutesTask : DefaultTask() {
             }
 
             methodHandlersBlock.append("\t\t$controllerVar = NEW $ctrlType().\r\n")
-            methodHandlersBlock.append("\t\toResponse = NEW OpenEdge.Web.WebResponse().\r\n")
             methodHandlersBlock.append("\t\tDO ON ERROR UNDO, THROW:\r\n")
 
             if (!hasRequestDto && !hasResponseDto) {
