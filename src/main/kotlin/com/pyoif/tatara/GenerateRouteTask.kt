@@ -281,6 +281,8 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE oResult AS ${def.responseDtoClassName} NO-UNDO.\r\n")
             }
             methodHandlersBlock.append("\t\tDEFINE VARIABLE oResponse AS OpenEdge.Web.WebResponse NO-UNDO.\r\n")
+            methodHandlersBlock.append("\t\tDEFINE VARIABLE oWriter AS OpenEdge.Web.WebResponseWriter NO-UNDO.\r\n")
+            methodHandlersBlock.append("\t\tDEFINE VARIABLE iOffset AS INTEGER NO-UNDO.\r\n")
             if (index == 0 || def.className != routes[0].className) {
                 methodHandlersBlock.append("\t\tDEFINE VARIABLE $controllerVar AS $ctrlType NO-UNDO.\r\n")
             }
@@ -385,6 +387,7 @@ abstract class GenerateRoutesTask : DefaultTask() {
 
             methodHandlersBlock.append("\t\t$controllerVar = NEW $ctrlType().\r\n")
             methodHandlersBlock.append("\t\toResponse = NEW OpenEdge.Web.WebResponse().\r\n")
+            methodHandlersBlock.append("\t\toWriter = NEW OpenEdge.Web.WebResponseWriter(oResponse).\r\n")
             methodHandlersBlock.append("\t\tDO ON ERROR UNDO, THROW:\r\n")
 
             if (!hasRequestDto && !hasResponseDto) {
@@ -437,8 +440,15 @@ abstract class GenerateRoutesTask : DefaultTask() {
             methodHandlersBlock.append("\r\n")
 
             methodHandlersBlock.append("\t\toResponse:StatusCode = 200.\r\n")
+            methodHandlersBlock.append("\t\toResponse:ContentType = \"application/json\".\r\n")
             if (hasResponseDto) {
-                methodHandlersBlock.append("\t\toResponse:Entity = oResult.\r\n")
+                methodHandlersBlock.append("\t\toWriter:Open().\r\n")
+                methodHandlersBlock.append("\t\tiOffset = 1.\r\n")
+                methodHandlersBlock.append("\t\tDO WHILE iOffset <= LENGTH(oResult:data):\r\n")
+                methodHandlersBlock.append("\t\t\toWriter:Write(SUBSTRING(oResult:data, iOffset, 32000)).\r\n")
+                methodHandlersBlock.append("\t\t\tiOffset = iOffset + 32000.\r\n")
+                methodHandlersBlock.append("\t\tEND.\r\n")
+                methodHandlersBlock.append("\t\toWriter:Close().\r\n")
             }
             methodHandlersBlock.append("\t\tRETURN 0.\r\n")
             methodHandlersBlock.append("\tEND METHOD.")

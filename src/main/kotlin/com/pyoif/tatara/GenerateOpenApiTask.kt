@@ -41,6 +41,9 @@ abstract class GenerateOpenApiTask : DefaultTask() {
     @get:Input
     abstract val apiVersion: Property<String>
 
+    @get:Input
+    abstract val apiServerUrl: Property<String>
+
     private val typeMap = mapOf(
         "CHARACTER" to mapOf("type" to "string"),
         "INTEGER"   to mapOf<String,Any>("type" to "integer"),
@@ -70,7 +73,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val handlersFiles = handlersRoot.walkTopDown().filter { it.isFile && it.extension == "handlers" }.toList()
         val responseDtoClasses = mutableSetOf<String>()
 
-        // First pass: collect response DTOs only (request DTOs will be processed per-route based on HTTP method)
+        // First pass: collect response DTOs only
         handlersFiles.forEach { handlersFile ->
             collectResponseDtosFromHandlers(handlersFile, genRoot, pkgRoot, responseDtoClasses, routeParser)
         }
@@ -100,7 +103,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                 addProperty("version", apiVersion.get())
             })
             add("servers", JsonArray().apply {
-                add(JsonObject().apply { addProperty("url", "/api") })
+                add(JsonObject().apply { addProperty("url", apiServerUrl.get()) })
             })
             add("paths", paths)
             add("components", JsonObject().apply {
@@ -139,7 +142,6 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             val routes = routeParser.extractRoutesFromFile(ctrlFile)
             
             routes.forEach { route ->
-                // Only collect response DTOs, not request DTOs
                 if (route.responseDtoClassName != null && route.responseDtoClassName.uppercase() != "VOID") {
                     dtoClasses.add(route.responseDtoClassName)
                 }
@@ -243,7 +245,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             val routes = routeParser.extractRoutesFromFile(ctrlFile)
             logger.lifecycle("Extracted ${routes.size} routes from $ctrlClass")
             routes.forEach { route ->
-                val fullPath = "/$serviceName/${route.routePath}"
+                val fullPath = "/" + route.routePath
                 logger.lifecycle("Adding path: $fullPath [${route.httpMethod}]")
                 buildPathFromRoute(route, fullPath, paths, schemas, parameters, pkgRoot)
             }
@@ -289,45 +291,43 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                 })
             }
             
-            // Extract query parameters from DTO (for all methods)
+            // Extract query parameters from DTO (for all methods) — inline in path
             val dtoInfo = DtoParser.parse(route.requestDtoClassName, pkgRoot)
             dtoInfo.properties.forEach { prop ->
                 if (prop.location == DtoParser.ParamLocation.QUERY) {
-                    val paramKey = "${route.httpMethod}_${prop.name}"
-                    if (!parameters.has(paramKey)) {
-                        val paramSchema = if (prop.ablType.uppercase() in typeMap) {
-                            JsonObject().apply {
-                                typeMap[prop.ablType.uppercase()]!!.forEach { (k, v) ->
-                                    if (v is Number) addProperty(k, v.toInt())
-                                    else addProperty(k, v.toString())
-                                }
+                    val paramSchema = if (prop.ablType.uppercase() in typeMap) {
+                        JsonObject().apply {
+                            typeMap[prop.ablType.uppercase()]!!.forEach { (k, v) ->
+                                if (v is Number) addProperty(k, v.toInt())
+                                else addProperty(k, v.toString())
                             }
-                        } else {
-                            JsonObject().apply { addProperty("\$ref", "#/components/schemas/${prop.ablType.substringAfterLast('.')}") }
                         }
-                        
-                        if (prop.isExtent) {
-                            parameters.add(paramKey, JsonObject().apply {
-                                addProperty("name", prop.name)
-                                addProperty("in", "query")
-                                addProperty("required", prop.isRequired)
-                                add("schema", JsonObject().apply {
-                                    addProperty("type", "array")
-                                    add("items", paramSchema)
-                                })
-                            })
-                        } else {
-                            parameters.add(paramKey, JsonObject().apply {
-                                addProperty("name", prop.name)
-                                addProperty("in", "query")
-                                addProperty("required", prop.isRequired)
-                                add("schema", paramSchema)
-                            })
+                    } else {
+                        val refName = prop.ablType.substringAfterLast('.')
+                        if (!schemas.has(refName)) {
+                            addDtoToSchemas(prop.ablType, pkgRoot, schemas)
                         }
+                        JsonObject().apply { addProperty("\$ref", "#/components/schemas/$refName") }
                     }
-                    params.add(JsonObject().apply {
-                        addProperty("\$ref", "#/components/parameters/$paramKey")
-                    })
+
+                    if (prop.isExtent) {
+                        params.add(JsonObject().apply {
+                            addProperty("name", prop.name)
+                            addProperty("in", "query")
+                            addProperty("required", prop.isRequired)
+                            add("schema", JsonObject().apply {
+                                addProperty("type", "array")
+                                add("items", paramSchema)
+                            })
+                        })
+                    } else {
+                        params.add(JsonObject().apply {
+                            addProperty("name", prop.name)
+                            addProperty("in", "query")
+                            addProperty("required", prop.isRequired)
+                            add("schema", paramSchema)
+                        })
+                    }
                 }
             }
         }

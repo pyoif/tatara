@@ -39,9 +39,9 @@ object DtoParser {
             annotationRegex.findAll(trimmed).forEach { m ->
                 when (m.groupValues[1].lowercase()) {
                     "required" -> isReq = true
-                    "path" -> loc = ParamLocation.PATH
-                    "query" -> loc = ParamLocation.QUERY
-                    "body" -> loc = ParamLocation.BODY
+                    "path" -> { loc = ParamLocation.PATH; isReq = false }
+                    "query" -> { loc = ParamLocation.QUERY; isReq = false }
+                    "body" -> { loc = ParamLocation.BODY; isReq = false }
                 }
             }
 
@@ -53,9 +53,8 @@ object DtoParser {
                     location = loc,
                     isExtent = m.groups[3]?.value != null
                 ))
-                // Reset for next property
+                // Reset @Required only — location sticks until next @Path/@Query/@Body
                 isReq = false
-                loc = ParamLocation.UNKNOWN
             }
         }
         return DtoInfo(properties)

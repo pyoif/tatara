@@ -23,6 +23,7 @@ class TataraPlugin : Plugin<Project> {
         project.tasks.register("generateOpenApi", GenerateOpenApiTask::class.java) {
             group = "tatara"
             description = "Generates OpenAPI 3.0 swagger.json from handler annotations and DTO classes"
+            apiServerUrl.convention("/${project.name}/web")
         }
 
         val copySwaggerUi = project.tasks.register("copySwaggerUi", Copy::class.java) {
