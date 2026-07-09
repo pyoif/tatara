@@ -45,7 +45,9 @@ class GenerateRouteTaskEmitTest {
 
         assertTrue(shim.contains("oJson:Add(\"id\", oResult:id)."), "shim should emit direct Add for scalar id")
         assertTrue(shim.contains("oJson:Add(\"name\", oResult:name)."), "shim should emit direct Add for scalar name")
-        assertTrue(shim.contains("oJson:Write(oWriter)"), "shim should write oJson to oWriter")
+        assertTrue(shim.contains("oJson:Write(oMemStream)"), "shim should write oJson to MemoryOutputStream")
+        assertTrue(shim.contains("mPayload = oMemStream:Data"), "shim should extract MEMPTR from stream")
+        assertTrue(shim.contains("oWriter:Write(mPayload)"), "shim should write MEMPTR to oWriter")
         assertTrue(shim.contains("oResponse:ContentType = \"application/json\""), "shim should set content type")
         assertFalse(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"), "shim should not call removed ToJsonObject method")
         assertFalse(shim.contains("oResult:data"), "shim should NOT chunk-write oResult:data")
@@ -92,6 +94,8 @@ class GenerateRouteTaskEmitTest {
         assertTrue(shim.contains("oSub_addr:Add(\"city\", oResult:addr:city)."), "shim should inline nested DTO prop with chained accessor onto sub-object")
         assertTrue(shim.contains("oSub_addr:Add(\"zip\", oResult:addr:zip)."), "shim should inline nested DTO prop with chained accessor onto sub-object")
         assertTrue(shim.contains("oJson:Add(\"addr\", oSub_addr)."), "shim should attach sub-object to parent under prop name")
+        // Sub-object nests into parent JsonObject; parent oJson:Write(oMemStream) serializes the whole tree
+        assertTrue(shim.contains("oJson:Write(oMemStream)"), "shim should serialize top-level oJson to MemoryOutputStream")
     }
 
     @Test
@@ -137,10 +141,11 @@ class GenerateRouteTaskEmitTest {
         assertTrue(openIdx > initIdx, "oWriter:Open() should come after oWriter initialization")
         assertTrue(openIdx - initIdx < 200, "oWriter:Open() should be right after init, not far away")
 
-        // Error path writes message via oJson:Write(oWriter), not oResponse:Entity
+        // Error path writes message via oJson:Write(oMemStream) + oWriter:Write(mPayload)
         assertTrue(shim.contains("oJson:Add(\"error\", errApi:GetMessage(1))"), "ApiError catch should add error message")
         assertTrue(shim.contains("oJson:Add(\"error\", errApp:GetMessage(1))"), "AppError catch should add error message")
         assertTrue(shim.contains("oJson:Add(\"error\", errCustom:GetMessage(1))"), "Custom error catch should add error message")
+        assertTrue(shim.contains("errApi:HttpCode"), "ApiError should set status from HttpCode")
         assertFalse(shim.contains("oResponse:Entity = errCustom"), "should not assign custom error to Entity")
         assertFalse(shim.contains("oResponse:Entity = NEW Tatara.Api.ErrorResponse"), "should not construct ErrorResponse")
     }
