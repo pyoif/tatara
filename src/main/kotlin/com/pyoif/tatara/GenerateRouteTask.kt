@@ -489,16 +489,13 @@ abstract class GenerateRoutesTask : DefaultTask() {
             val propAccessor = "$oResultAccessor:${prop.name}"
             when {
                 prop.isTempTable -> {
-                    when (prop.tempTableKind) {
-                        DtoParser.TempTableKind.ARRAY -> {
-                            sb.append("\t\toJson:Add(\"${prop.name}\", NEW Progress.Json.ObjectModel.JsonArray()).\r\n")
-                            sb.append("\t\toJson:GetJsonArray(\"${prop.name}\"):Read($propAccessor).\r\n")
-                        }
-                        DtoParser.TempTableKind.OBJECT -> {
-                            sb.append("\t\toJson:Add(\"${prop.name}\", NEW Progress.Json.ObjectModel.JsonObject()).\r\n")
-                            sb.append("\t\toJson:GetJsonObject(\"${prop.name}\"):Read($propAccessor).\r\n")
-                        }
-                        DtoParser.TempTableKind.NONE -> { /* unreachable */ }
+                    val helper = when (prop.tempTableKind) {
+                        DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
+                        DtoParser.TempTableKind.OBJECT -> "ReadTempTableAsObject"
+                        DtoParser.TempTableKind.NONE -> null
+                    }
+                    if (helper != null) {
+                        sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:$helper($propAccessor)).\r\n")
                     }
                 }
                 prop.isDto && prop.nested != null -> {

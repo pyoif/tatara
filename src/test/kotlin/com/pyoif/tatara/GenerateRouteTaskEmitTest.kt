@@ -172,14 +172,12 @@ class GenerateRouteTaskEmitTest {
             )
         )
 
-        assertTrue(shim.contains("oJson:Add(\"items\", NEW Progress.Json.ObjectModel.JsonArray())."),
-            "shim should construct JsonArray for @Array")
-        assertTrue(shim.contains("oJson:GetJsonArray(\"items\"):Read(oResult:items)."),
-            "shim should call GetJsonArray:Read for @Array")
-        assertFalse(shim.contains("oJson:Add(\"items\", oResult:items)."),
-            "shim should not pass handle directly to Add (would stringify ref)")
+        assertTrue(shim.contains("oJson:Add(\"items\", Tatara.Api.DtoSerializer:ReadTempTableAsArray(oResult:items))."),
+            "shim should call ReadTempTableAsArray for @Array")
+        assertFalse(shim.contains("oJson:GetJsonArray"),
+            "shim should not inline JsonArray:Read for @Array (moved to DtoSerializer)")
         assertFalse(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"),
-            "shim should not call DtoSerializer for temp-table prop")
+            "shim should not call ToJsonObject for temp-table prop")
     }
 
     @Test
@@ -210,9 +208,9 @@ class GenerateRouteTaskEmitTest {
             )
         )
 
-        assertTrue(shim.contains("oJson:Add(\"summary\", NEW Progress.Json.ObjectModel.JsonObject())."),
-            "shim should construct empty JsonObject for @Object")
-        assertTrue(shim.contains("oJson:GetJsonObject(\"summary\"):Read(oResult:summary)."),
-            "shim should call Read for @Object")
+        assertTrue(shim.contains("oJson:Add(\"summary\", Tatara.Api.DtoSerializer:ReadTempTableAsObject(oResult:summary))."),
+            "shim should call ReadTempTableAsObject for @Object")
+        assertFalse(shim.contains("oJson:GetJsonObject"),
+            "shim should not inline JsonObject:Read for @Object (moved to DtoSerializer)")
     }
 }
