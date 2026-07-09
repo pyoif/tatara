@@ -4,6 +4,7 @@ import java.io.File
 
 object DtoParser {
     enum class ParamLocation { PATH, QUERY, BODY, UNKNOWN }
+    enum class TempTableKind { NONE, OBJECT, ARRAY }
 
     data class DtoProperty(
         val name: String,
@@ -12,7 +13,9 @@ object DtoParser {
         val location: ParamLocation = ParamLocation.UNKNOWN,
         val isExtent: Boolean = false,
         val isDto: Boolean = false,
-        val nested: DtoInfo? = null
+        val nested: DtoInfo? = null,
+        val isTempTable: Boolean = false,
+        val tempTableKind: TempTableKind = TempTableKind.NONE
     )
 
     data class DtoInfo(
@@ -26,7 +29,7 @@ object DtoParser {
     private val propDefRegex = Regex(
         """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
-    private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body)""")
+    private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body|TempTable|Object|Array)""")
 
     fun parse(
         dtoClassName: String,
@@ -41,6 +44,8 @@ object DtoParser {
 
         var isReq = false
         var loc = ParamLocation.UNKNOWN
+        var isTempTable = false
+        var tempTableKind = TempTableKind.NONE
 
         val primitives = setOf(
             "CHARACTER", "LONGCHAR", "INTEGER", "INT64", "DECIMAL",
@@ -56,6 +61,8 @@ object DtoParser {
                     "path" -> { loc = ParamLocation.PATH; isReq = false }
                     "query" -> { loc = ParamLocation.QUERY; isReq = false }
                     "body" -> { loc = ParamLocation.BODY; isReq = false }
+                    "object" -> { isTempTable = true; tempTableKind = TempTableKind.OBJECT; isReq = false }
+                    "array", "temptable" -> { isTempTable = true; tempTableKind = TempTableKind.ARRAY; isReq = false }
                 }
             }
 
@@ -64,18 +71,19 @@ object DtoParser {
                 val ablType = m.groupValues[2]
                 val isExtent = m.groups[3]?.value != null
 
-                val upperType = ablType.uppercase()
-                val isScalar = primitives.contains(upperType) || upperType == "VOID"
-
                 var isDto = false
                 var nested: DtoInfo? = null
-                if (!isScalar) {
-                    if (ablType in visited) {
-                        isDto = false
-                        nested = null
-                    } else {
-                        isDto = true
-                        nested = parse(ablType, srcRoot, visited)
+                if (!isTempTable) {
+                    val upperType = ablType.uppercase()
+                    val isScalar = primitives.contains(upperType) || upperType == "VOID"
+                    if (!isScalar) {
+                        if (ablType in visited) {
+                            isDto = false
+                            nested = null
+                        } else {
+                            isDto = true
+                            nested = parse(ablType, srcRoot, visited)
+                        }
                     }
                 }
 
@@ -86,10 +94,14 @@ object DtoParser {
                     location = loc,
                     isExtent = isExtent,
                     isDto = isDto,
-                    nested = nested
+                    nested = nested,
+                    isTempTable = isTempTable,
+                    tempTableKind = tempTableKind
                 ))
-                // Reset @Required only — location sticks until next @Path/@Query/@Body
+                // Reset @Required and @TempTable kind — location sticks until next @Path/@Query/@Body
                 isReq = false
+                isTempTable = false
+                tempTableKind = TempTableKind.NONE
             }
         }
         return DtoInfo(properties)

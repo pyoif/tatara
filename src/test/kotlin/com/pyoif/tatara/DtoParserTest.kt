@@ -87,4 +87,74 @@ class DtoParserTest {
         val info = DtoParser.parse("com.example.Missing", tmp.toFile())
         assertTrue(info.properties.isEmpty())
     }
+
+    @Test
+    fun `recognizes @TempTable annotation as ARRAY by default`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @TempTable
+                    DEFINE PUBLIC PROPERTY orders AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        assertEquals(1, info.properties.size)
+        val prop = info.properties[0]
+        assertEquals("orders", prop.name)
+        assertTrue(prop.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, prop.tempTableKind)
+        assertFalse(prop.isDto)
+    }
+
+    @Test
+    fun `recognizes @Array annotation explicitly`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, prop.tempTableKind)
+    }
+
+    @Test
+    fun `recognizes @Object annotation`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @Object
+                    DEFINE PUBLIC PROPERTY summary AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertEquals(DtoParser.TempTableKind.OBJECT, prop.tempTableKind)
+    }
+
+    @Test
+    fun `HANDLE prop without annotation is not a temp-table`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY rawHandle AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertFalse(prop.isTempTable)
+        assertEquals(DtoParser.TempTableKind.NONE, prop.tempTableKind)
+    }
 }
