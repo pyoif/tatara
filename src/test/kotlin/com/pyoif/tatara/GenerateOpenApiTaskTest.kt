@@ -111,4 +111,120 @@ class GenerateOpenApiTaskTest {
         assertTrue(swagger.contains("\"additionalProperties\": true"), "should emit additionalProperties. Got:\n$swagger")
         assertTrue(swagger.contains("ABL temp-table (single-row)"), "should include single-row description. Got:\n$swagger")
     }
+
+    @Test
+    fun `ErrorResponse schema only contains error key`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/UserController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.UserController:
+                    // @GET("/svc/users")
+                    METHOD PUBLIC com.example.User GetUser():
+                        DEFINE VARIABLE ctrl0 AS com.example.UserController NO-UNDO.
+                        ctrl0 = NEW com.example.UserController().
+                        RETURN NEW com.example.User().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.UserController", "/svc/users")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertFalse(swagger.contains("\"message\": \"string\""), "ErrorResponse should not have message key. Got:\n$swagger")
+        assertTrue(swagger.contains("\"ErrorResponse\""), "should still include ErrorResponse. Got:\n$swagger")
+    }
+
+    @Test
+    fun `custom error response uses ErrorResponse schema not custom class`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/UserController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.UserController:
+                    // @GET("/svc/users")
+                    // @Response(404, com.example.NotFoundError)
+                    METHOD PUBLIC com.example.User GetUser():
+                        DEFINE VARIABLE ctrl0 AS com.example.UserController NO-UNDO.
+                        ctrl0 = NEW com.example.UserController().
+                        RETURN NEW com.example.User().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.UserController", "/svc/users")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"404\""), "should have 404 response. Got:\n$swagger")
+        assertFalse(swagger.contains("#/components/schemas/NotFoundError"),
+            "should not reference custom DTO class for error. Got:\n$swagger")
+        assertTrue(swagger.contains("#/components/schemas/ErrorResponse"),
+            "should reference ErrorResponse for 404. Got:\n$swagger")
+    }
+
+    @Test
+    fun `nested DTO prop schema is added to schemas`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/UserController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.UserController:
+                    // @GET("/svc/users")
+                    METHOD PUBLIC com.example.User GetUser():
+                        DEFINE VARIABLE ctrl0 AS com.example.UserController NO-UNDO.
+                        ctrl0 = NEW com.example.UserController().
+                        RETURN NEW com.example.User().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY id   AS INTEGER.
+                    DEFINE PUBLIC PROPERTY addr AS com.example.Address.
+            """.trimIndent())
+        }
+        File(src, "com/example/Address.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Address:
+                    DEFINE PUBLIC PROPERTY city AS CHARACTER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.UserController", "/svc/users")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"Address\""), "Address schema should be added. Got:\n$swagger")
+        assertTrue(swagger.contains("\"city\""), "Address schema should contain city prop. Got:\n$swagger")
+        assertTrue(swagger.contains("#/components/schemas/Address"),
+            "User schema should \$ref Address. Got:\n$swagger")
+    }
 }

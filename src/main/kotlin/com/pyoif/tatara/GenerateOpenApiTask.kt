@@ -184,6 +184,11 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                 }
                 innerProps.add(p.name, propSchema)
             } else {
+                // Recurse into nested DTOs so referenced class schemas are added.
+                val upper = p.ablType.uppercase()
+                if (upper !in typeMap && upper != "VOID") {
+                    addDtoToSchemas(p.ablType, pkgRoot, schemas)
+                }
                 innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, schemas))
             }
             if (p.isRequired) requiredArr.add(p.name)
