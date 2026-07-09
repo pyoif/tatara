@@ -487,6 +487,7 @@ abstract class GenerateRoutesTask : DefaultTask() {
         dtoInfo.properties.forEach { prop ->
             val propAccessor = "$oResultAccessor:${prop.name}"
             when {
+                prop.isExtent -> emitExtentBranch(sb, "oJson", prop, oResultAccessor)
                 prop.isTempTable -> {
                     val helper = when (prop.tempTableKind) {
                         DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
@@ -520,6 +521,7 @@ abstract class GenerateRoutesTask : DefaultTask() {
         dtoInfo.properties.forEach { prop ->
             val propAccessor = "$oResultAccessor:${prop.name}"
             when {
+                prop.isExtent -> emitExtentBranch(sb, subObjName, prop, oResultAccessor)
                 prop.isTempTable -> {
                     val helper = when (prop.tempTableKind) {
                         DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
@@ -542,6 +544,40 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 }
             }
         }
+    }
+
+    private fun emitExtentBranch(
+        sb: StringBuilder,
+        subObjName: String,
+        prop: DtoParser.DtoProperty,
+        oResultAccessor: String
+    ) {
+        val propAccessor = "$oResultAccessor:${prop.name}"
+        val arrName = "oArr_${prop.name}"
+        val idxName = "i_${prop.name}"
+        sb.append("\t\tDEFINE VARIABLE $arrName AS Progress.Json.ObjectModel.JsonArray NO-UNDO.\r\n")
+        sb.append("\t\t$arrName = NEW Progress.Json.ObjectModel.JsonArray().\r\n")
+        sb.append("\t\tDEFINE VARIABLE $idxName AS INTEGER NO-UNDO.\r\n")
+        sb.append("\t\tDO $idxName = 1 TO EXTENT($propAccessor):\r\n")
+        val isScalar = setOf(
+            "CHARACTER", "LONGCHAR", "INTEGER", "INT64", "DECIMAL",
+            "LOGICAL", "DATE", "DATETIME", "DATETIME-TZ"
+        ).contains(prop.ablType.uppercase())
+        if (isScalar) {
+            sb.append("\t\t\t$arrName:Add($propAccessor[$idxName]).\r\n")
+        } else if (prop.nested != null) {
+            val itemName = "oItem_${prop.name}"
+            sb.append("\t\t\tDEFINE VARIABLE $itemName AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\r\n")
+            sb.append("\t\t\t$itemName = NEW Progress.Json.ObjectModel.JsonObject().\r\n")
+            prop.nested.properties.forEach { nestedProp ->
+                sb.append("\t\t\t$itemName:Add(\"${nestedProp.name}\", $propAccessor[$idxName]:${nestedProp.name}).\r\n")
+            }
+            sb.append("\t\t\t$arrName:Add($itemName).\r\n")
+        } else {
+            sb.append("\t\t\t/* extent of unresolvable type: ${prop.ablType} */\r\n")
+        }
+        sb.append("\t\tEND.\r\n")
+        sb.append("\t\t$subObjName:Add(\"${prop.name}\", $arrName).\r\n")
     }
 
     private fun deleteShim(routePath: String, outDir: File) {

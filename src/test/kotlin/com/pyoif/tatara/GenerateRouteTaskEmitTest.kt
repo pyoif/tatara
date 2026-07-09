@@ -256,4 +256,87 @@ class GenerateRouteTaskEmitTest {
         assertFalse(shim.contains("oJson:GetCharacter(\"tags\")"),
             "shim should not use scalar GetCharacter for extent prop")
     }
+
+    @Test
+    fun `response serializes scalar extent as JSON array`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY tags AS CHARACTER EXTENT 3.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/users",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/users",
+                httpMethod = "GET",
+                className = "com.example.UserController",
+                ablMethod = "GetUser",
+                responseDtoClassName = "com.example.User"
+            )
+        )
+
+        assertTrue(shim.contains("DEFINE VARIABLE oArr_tags AS Progress.Json.ObjectModel.JsonArray"),
+            "shim should declare oArr_tags JsonArray")
+        assertTrue(shim.contains("DO i_tags = 1 TO EXTENT(oResult:tags)"),
+            "shim should loop over EXTENT bound")
+        assertTrue(shim.contains("oArr_tags:Add(oResult:tags[i_tags])."),
+            "shim should add each element to array")
+        assertTrue(shim.contains("oJson:Add(\"tags\", oArr_tags)."),
+            "shim should attach array under prop name")
+        assertFalse(shim.contains("oJson:Add(\"tags\", oResult:tags)."),
+            "shim should not pass extent ref directly to Add (would stringify)")
+    }
+
+    @Test
+    fun `response serializes nested DTO extent as array of objects`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/Address.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Address:
+                    DEFINE PUBLIC PROPERTY city AS CHARACTER.
+            """.trimIndent())
+        }
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY addrs AS com.example.Address EXTENT 2.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/users",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/users",
+                httpMethod = "GET",
+                className = "com.example.UserController",
+                ablMethod = "GetUser",
+                responseDtoClassName = "com.example.User"
+            )
+        )
+
+        assertTrue(shim.contains("DEFINE VARIABLE oArr_addrs AS Progress.Json.ObjectModel.JsonArray"),
+            "shim should declare oArr_addrs JsonArray")
+        assertTrue(shim.contains("oArr_addrs:Add(oItem_addrs)."),
+            "shim should add per-item object to array")
+        assertTrue(shim.contains("oItem_addrs:Add(\"city\", oResult:addrs[i_addrs]:city)."),
+            "shim should build per-item JsonObject with nested prop")
+        assertTrue(shim.contains("oJson:Add(\"addrs\", oArr_addrs)."),
+            "shim should attach array under prop name")
+    }
 }
