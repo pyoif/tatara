@@ -27,10 +27,21 @@ object DtoParser {
         }
     }
 
+    data class InlineTempTable(
+        val bufferName: String,
+        val fields: DtoInfo
+    )
+
     private val propDefRegex = Regex(
         """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
     private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body|TempTable|Object|Array)""")
+    private val ttDefRegex = Regex(
+        """(?is)DEFINE\s+TEMP-TABLE\s+(\w+)([^.]+?)\."""
+    )
+    private val fieldDefRegex = Regex(
+        """(?i)FIELD\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
+    )
 
     fun parse(
         dtoClassName: String,
@@ -108,6 +119,28 @@ object DtoParser {
             }
         }
         return DtoInfo(properties)
+    }
+
+    fun parseInlineTempTable(dtoClassName: String, srcRoot: File): InlineTempTable? {
+        val file = resolveFile(dtoClassName, srcRoot) ?: return null
+        val content = file.readText()
+        val ttMatch = ttDefRegex.find(content) ?: return null
+        val bufferName = ttMatch.groupValues[1]
+        val body = ttMatch.groupValues[2]
+        val properties = mutableListOf<DtoProperty>()
+        fieldDefRegex.findAll(body).forEach { m ->
+            val name = m.groupValues[1]
+            val ablType = m.groupValues[2]
+            val isExtent = m.groups[3]?.value != null
+            val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
+            properties.add(DtoProperty(
+                name = name,
+                ablType = ablType,
+                isExtent = isExtent,
+                extentSize = extentSize
+            ))
+        }
+        return InlineTempTable(bufferName, DtoInfo(properties))
     }
 
     private fun resolveFile(dtoClassName: String, srcRoot: File): File? {

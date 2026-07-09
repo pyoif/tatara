@@ -205,4 +205,58 @@ class DtoParserTest {
         assertFalse(prop.isTempTable)
         assertEquals(DtoParser.TempTableKind.NONE, prop.tempTableKind)
     }
+
+    @Test
+    fun `parseInlineTempTable extracts fields from DEFINE TEMP-TABLE`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        FIELD sku     AS CHARACTER.
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)
+        assertNotNull(tt)
+        assertEquals("ttItems", tt!!.bufferName)
+        assertEquals(2, tt.fields.properties.size)
+        assertEquals("orderId", tt.fields.properties[0].name)
+        assertEquals("INTEGER", tt.fields.properties[0].ablType)
+        assertEquals("sku", tt.fields.properties[1].name)
+        assertEquals("CHARACTER", tt.fields.properties[1].ablType)
+    }
+
+    @Test
+    fun `parseInlineTempTable returns null when no TEMP-TABLE`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.User", src)
+        assertNull(tt)
+    }
+
+    @Test
+    fun `parseInlineTempTable captures EXTENT on field`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems FIELD tags AS CHARACTER EXTENT 3.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)
+        assertNotNull(tt)
+        val field = tt!!.fields.properties[0]
+        assertTrue(field.isExtent)
+        assertEquals(3, field.extentSize)
+    }
 }
