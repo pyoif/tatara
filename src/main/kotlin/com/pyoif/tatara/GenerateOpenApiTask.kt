@@ -160,7 +160,32 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val innerProps = JsonObject()
         val requiredArr = JsonArray()
         dto.properties.forEach { p ->
-            innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, schemas))
+            if (p.isTempTable) {
+                val desc = when (p.tempTableKind) {
+                    DtoParser.TempTableKind.ARRAY -> "ABL temp-table; field-level schema not modeled"
+                    DtoParser.TempTableKind.OBJECT -> "ABL temp-table (single-row); field-level schema not modeled"
+                    DtoParser.TempTableKind.NONE -> null
+                }
+                val propSchema = when (p.tempTableKind) {
+                    DtoParser.TempTableKind.ARRAY -> JsonObject().apply {
+                        addProperty("type", "array")
+                        add("items", JsonObject().apply {
+                            addProperty("type", "object")
+                            addProperty("additionalProperties", true)
+                        })
+                        if (desc != null) addProperty("description", desc)
+                    }
+                    DtoParser.TempTableKind.OBJECT -> JsonObject().apply {
+                        addProperty("type", "object")
+                        addProperty("additionalProperties", true)
+                        if (desc != null) addProperty("description", desc)
+                    }
+                    DtoParser.TempTableKind.NONE -> JsonObject().apply { addProperty("type", "null") }
+                }
+                innerProps.add(p.name, propSchema)
+            } else {
+                innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, schemas))
+            }
             if (p.isRequired) requiredArr.add(p.name)
         }
 
