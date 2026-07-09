@@ -161,24 +161,44 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val requiredArr = JsonArray()
         dto.properties.forEach { p ->
             if (p.isTempTable) {
+                val inlineTt = DtoParser.parseInlineTempTable(dtoClass, pkgRoot)
                 val desc = when (p.tempTableKind) {
-                    DtoParser.TempTableKind.ARRAY -> "ABL temp-table; field-level schema not modeled"
-                    DtoParser.TempTableKind.OBJECT -> "ABL temp-table (single-row); field-level schema not modeled"
+                    DtoParser.TempTableKind.ARRAY -> "ABL temp-table; field-level schema from inline DEFINE TEMP-TABLE"
+                    DtoParser.TempTableKind.OBJECT -> "ABL temp-table (single-row); field-level schema from inline DEFINE TEMP-TABLE"
                     DtoParser.TempTableKind.NONE -> null
                 }
                 val propSchema = when (p.tempTableKind) {
-                    DtoParser.TempTableKind.ARRAY -> JsonObject().apply {
-                        addProperty("type", "array")
-                        add("items", JsonObject().apply {
-                            addProperty("type", "object")
-                            addProperty("additionalProperties", true)
-                        })
-                        if (desc != null) addProperty("description", desc)
+                    DtoParser.TempTableKind.ARRAY -> {
+                        if (inlineTt != null) {
+                            val typedObj = buildTempTableObjectSchema(inlineTt.fields)
+                            JsonObject().apply {
+                                addProperty("type", "array")
+                                add("items", typedObj)
+                                if (desc != null) addProperty("description", desc)
+                            }
+                        } else {
+                            JsonObject().apply {
+                                addProperty("type", "array")
+                                add("items", JsonObject().apply {
+                                    addProperty("type", "object")
+                                    addProperty("additionalProperties", true)
+                                })
+                                if (desc != null) addProperty("description", desc)
+                            }
+                        }
                     }
-                    DtoParser.TempTableKind.OBJECT -> JsonObject().apply {
-                        addProperty("type", "object")
-                        addProperty("additionalProperties", true)
-                        if (desc != null) addProperty("description", desc)
+                    DtoParser.TempTableKind.OBJECT -> {
+                        if (inlineTt != null) {
+                            buildTempTableObjectSchema(inlineTt.fields).apply {
+                                if (desc != null) addProperty("description", desc)
+                            }
+                        } else {
+                            JsonObject().apply {
+                                addProperty("type", "object")
+                                addProperty("additionalProperties", true)
+                                if (desc != null) addProperty("description", desc)
+                            }
+                        }
                     }
                     DtoParser.TempTableKind.NONE -> JsonObject().apply { addProperty("type", "null") }
                 }
@@ -200,6 +220,17 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             if (requiredArr.size() > 0) add("required", requiredArr)
         }
         schemas.add(nameOnly, schema)
+    }
+
+    private fun buildTempTableObjectSchema(fields: DtoParser.DtoInfo): JsonObject {
+        val innerProps = JsonObject()
+        fields.properties.forEach { p ->
+            innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, JsonObject()))
+        }
+        return JsonObject().apply {
+            addProperty("type", "object")
+            add("properties", innerProps)
+        }
     }
 
     private fun mapAblType(abType: String, extent: String?, schemas: JsonObject): JsonObject {

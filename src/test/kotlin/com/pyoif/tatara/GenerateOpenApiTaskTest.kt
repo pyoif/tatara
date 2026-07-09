@@ -227,4 +227,79 @@ class GenerateOpenApiTaskTest {
         assertTrue(swagger.contains("#/components/schemas/Address"),
             "User schema should \$ref Address. Got:\n$swagger")
     }
+
+    @Test
+    fun `emits typed array schema from inline temp-table fields`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        FIELD sku     AS CHARACTER.
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "should expose orderId field. Got:\n$swagger")
+        assertTrue(swagger.contains("\"sku\""), "should expose sku field. Got:\n$swagger")
+        assertFalse(swagger.contains("\"additionalProperties\": true"),
+            "should not fall back to generic schema when inline temp-table is present. Got:\n$swagger")
+    }
+
+    @Test
+    fun `falls back to generic schema when no inline temp-table`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"additionalProperties\": true"),
+            "should fall back to generic schema. Got:\n$swagger")
+    }
 }
