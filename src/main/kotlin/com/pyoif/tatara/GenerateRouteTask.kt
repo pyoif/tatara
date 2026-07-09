@@ -459,7 +459,7 @@ abstract class GenerateRoutesTask : DefaultTask() {
                 methodHandlersBlock.append("\t\toJson = NEW Progress.Json.ObjectModel.JsonObject().\r\n")
                 val responseInfo = DtoParser.parse(def.responseDtoClassName!!, srcRoot)
                 emitResponseJson(methodHandlersBlock, "oResult", responseInfo)
-                methodHandlersBlock.append("\t\toJson:Write(oWriter)\r\n")
+                methodHandlersBlock.append("\t\toJson:Write(oWriter).\r\n")
             }
             methodHandlersBlock.append("\t\toWriter:Close().\r\n")
             methodHandlersBlock.append("\t\tRETURN 0.\r\n")
@@ -499,24 +499,47 @@ abstract class GenerateRoutesTask : DefaultTask() {
                     }
                 }
                 prop.isDto && prop.nested != null -> {
-                    val nestedNames = prop.nested.properties.joinToString(", ") { "\"${it.name}\"" }
-                    val nestedTypes = prop.nested.properties.joinToString(", ") { "\"${it.ablType}\"" }
-                    val nestedIsDto = prop.nested.properties.joinToString(", ") {
-                        if (it.isDto) "yes" else "no"
-                    }
-                    val n = prop.nested.properties.size
-                    sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
-                    sb.append("\t\t\t$propAccessor,\r\n")
-                    sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedNames],\r\n")
-                    sb.append("\t\t\tNEW CHARACTER EXTENT [$n] [$nestedTypes],\r\n")
-                    sb.append("\t\t\tNEW LOGICAL   EXTENT [$n] [$nestedIsDto])).\r\n")
+                    val subObjName = "oSub_${prop.name}"
+                    sb.append("\t\tDEFINE VARIABLE $subObjName AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\r\n")
+                    sb.append("\t\t$subObjName = NEW Progress.Json.ObjectModel.JsonObject().\r\n")
+                    emitNestedJson(sb, subObjName, propAccessor, prop.nested)
+                    sb.append("\t\toJson:Add(\"${prop.name}\", $subObjName).\r\n")
                 }
                 else -> {
-                    sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:ToJsonObject(\r\n")
-                    sb.append("\t\t\t$propAccessor,\r\n")
-                    sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.name}\"],\r\n")
-                    sb.append("\t\t\tNEW CHARACTER EXTENT [1] [\"${prop.ablType}\"],\r\n")
-                    sb.append("\t\t\tNEW LOGICAL   EXTENT [1] [no])).\r\n")
+                    sb.append("\t\toJson:Add(\"${prop.name}\", $propAccessor).\r\n")
+                }
+            }
+        }
+    }
+
+    private fun emitNestedJson(
+        sb: StringBuilder,
+        subObjName: String,
+        oResultAccessor: String,
+        dtoInfo: DtoParser.DtoInfo
+    ) {
+        dtoInfo.properties.forEach { prop ->
+            val propAccessor = "$oResultAccessor:${prop.name}"
+            when {
+                prop.isTempTable -> {
+                    val helper = when (prop.tempTableKind) {
+                        DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
+                        DtoParser.TempTableKind.OBJECT -> "ReadTempTableAsObject"
+                        DtoParser.TempTableKind.NONE -> null
+                    }
+                    if (helper != null) {
+                        sb.append("\t\t$subObjName:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:$helper($propAccessor)).\r\n")
+                    }
+                }
+                prop.isDto && prop.nested != null -> {
+                    val deeperSubObjName = "oSub_${prop.name}_${dtoInfo.properties.indexOf(prop)}"
+                    sb.append("\t\tDEFINE VARIABLE $deeperSubObjName AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\r\n")
+                    sb.append("\t\t$deeperSubObjName = NEW Progress.Json.ObjectModel.JsonObject().\r\n")
+                    emitNestedJson(sb, deeperSubObjName, propAccessor, prop.nested)
+                    sb.append("\t\t$subObjName:Add(\"${prop.name}\", $deeperSubObjName).\r\n")
+                }
+                else -> {
+                    sb.append("\t\t$subObjName:Add(\"${prop.name}\", $propAccessor).\r\n")
                 }
             }
         }

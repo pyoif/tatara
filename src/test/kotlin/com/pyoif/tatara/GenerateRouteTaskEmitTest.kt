@@ -43,11 +43,11 @@ class GenerateRouteTaskEmitTest {
             )
         )
 
-        assertTrue(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"), "shim should call DtoSerializer")
-        assertTrue(shim.contains("\"id\""),  "shim should reference id prop")
-        assertTrue(shim.contains("\"name\""),"shim should reference name prop")
+        assertTrue(shim.contains("oJson:Add(\"id\", oResult:id)."), "shim should emit direct Add for scalar id")
+        assertTrue(shim.contains("oJson:Add(\"name\", oResult:name)."), "shim should emit direct Add for scalar name")
         assertTrue(shim.contains("oJson:Write(oWriter)"), "shim should write oJson to oWriter")
         assertTrue(shim.contains("oResponse:ContentType = \"application/json\""), "shim should set content type")
+        assertFalse(shim.contains("Tatara.Api.DtoSerializer:ToJsonObject"), "shim should not call removed ToJsonObject method")
         assertFalse(shim.contains("oResult:data"), "shim should NOT chunk-write oResult:data")
         assertFalse(shim.contains("oResponse:Entity = oJson"), "shim should not set Entity (writes via oWriter)")
     }
@@ -88,9 +88,10 @@ class GenerateRouteTaskEmitTest {
             )
         )
 
-        assertTrue(shim.contains("oResult:addr"), "shim should reference oResult:addr for nested prop")
-        assertTrue(shim.contains("\"city\""), "shim should include nested prop city")
-        assertTrue(shim.contains("\"zip\""),  "shim should include nested prop zip")
+        assertTrue(shim.contains("oSub_addr"), "shim should define sub-object variable for nested DTO")
+        assertTrue(shim.contains("oSub_addr:Add(\"city\", oResult:addr:city)."), "shim should inline nested DTO prop with chained accessor onto sub-object")
+        assertTrue(shim.contains("oSub_addr:Add(\"zip\", oResult:addr:zip)."), "shim should inline nested DTO prop with chained accessor onto sub-object")
+        assertTrue(shim.contains("oJson:Add(\"addr\", oSub_addr)."), "shim should attach sub-object to parent under prop name")
     }
 
     @Test
