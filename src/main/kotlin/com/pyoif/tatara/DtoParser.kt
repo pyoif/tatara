@@ -39,7 +39,7 @@ object DtoParser {
     )
     private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body|TempTable|Object|Array)(?:\("([^"]*)"\))?""")
     private val ttDefRegex = Regex(
-        """(?is)DEFINE\s+TEMP-TABLE\s+(\w+)([^.]+?)\."""
+        """(?is)DEFINE\s+TEMP-TABLE\s+(\w+)((?:[^."]|"[^"]*")+?)\."""
     )
     private val fieldDefRegex = Regex(
         """(?i)FIELD\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
@@ -170,18 +170,75 @@ object DtoParser {
             val bufferName = ttMatch.groupValues[1]
             val body = ttMatch.groupValues[2]
             val properties = mutableListOf<DtoProperty>()
-            fieldDefRegex.findAll(body).forEach { m ->
-                val name = m.groupValues[1]
-                val ablType = m.groupValues[2]
-                val isExtent = m.groups[3]?.value != null
-                val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
-                properties.add(DtoProperty(
-                    name = name,
-                    ablType = ablType,
-                    isExtent = isExtent,
-                    extentSize = extentSize
-                ))
+
+            var isTempTable = false
+            var tempTableKind = TempTableKind.NONE
+            var currentTempTableClass: String? = null
+            var currentTempTableName: String? = null
+
+            body.lines().forEach { line ->
+                val trimmed = line.trim()
+
+                annotationRegex.findAll(trimmed).forEach { m ->
+                    when (m.groupValues[1].lowercase()) {
+                        "object" -> {
+                            isTempTable = true
+                            tempTableKind = TempTableKind.OBJECT
+                            val (cls, name) = parseTempTableParam(m.groupValues[2])
+                            currentTempTableClass = cls
+                            currentTempTableName = name
+                        }
+                        "array" -> {
+                            isTempTable = true
+                            tempTableKind = TempTableKind.ARRAY
+                            val (cls, name) = parseTempTableParam(m.groupValues[2])
+                            currentTempTableClass = cls
+                            currentTempTableName = name
+                        }
+                        "temptable" -> {
+                            isTempTable = true
+                            tempTableKind = TempTableKind.ARRAY
+                            // bare alias — drop any parameter
+                        }
+                    }
+                }
+
+                fieldDefRegex.find(trimmed)?.let { m ->
+                    val name = m.groupValues[1]
+                    val ablType = m.groupValues[2]
+                    val isExtent = m.groups[3]?.value != null
+                    val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
+
+                    val promoteToTempTable = isTempTable && ablType.uppercase() == "HANDLE"
+                    // Field-level: name follows the tt<FieldName> convention when the user
+                    // didn't specify a class (i.e. "search current class for tt<FieldName>").
+                    // When the user explicitly gave a class but no name, leave the name null
+                    // so the OpenAPI task applies the convention uniformly.
+                    val effectiveName = when {
+                        !promoteToTempTable                          -> null
+                        currentTempTableName != null                 -> currentTempTableName
+                        currentTempTableClass == null                -> "tt" + name.replaceFirstChar { it.uppercase() }
+                        else                                         -> null
+                    }
+                    properties.add(DtoProperty(
+                        name = name,
+                        ablType = ablType,
+                        isExtent = isExtent,
+                        extentSize = extentSize,
+                        isTempTable = promoteToTempTable,
+                        tempTableKind = if (promoteToTempTable) tempTableKind else TempTableKind.NONE,
+                        tempTableClass = if (promoteToTempTable) currentTempTableClass else null,
+                        tempTableName = effectiveName
+                    ))
+
+                    // Reset after each field is emitted
+                    isTempTable = false
+                    tempTableKind = TempTableKind.NONE
+                    currentTempTableClass = null
+                    currentTempTableName = null
+                }
             }
+
             results.add(InlineTempTable(bufferName, DtoInfo(properties)))
         }
         return results

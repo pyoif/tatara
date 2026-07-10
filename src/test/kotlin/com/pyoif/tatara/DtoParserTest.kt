@@ -415,4 +415,102 @@ class DtoParserTest {
         assertNull(prop.tempTableClass)
         assertNull(prop.tempTableName)
     }
+
+    @Test
+    fun `parses nested @Array on FIELD line with class only`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Nested")
+                        FIELD lines   AS HANDLE
+                        FIELD sku     AS CHARACTER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val linesField = tt.fields.properties.find { it.name == "lines" }!!
+        assertTrue(linesField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, linesField.tempTableKind)
+        assertEquals("com.example.Nested", linesField.tempTableClass)
+        assertNull(linesField.tempTableName)
+    }
+
+    @Test
+    fun `parses nested @Object on FIELD line with class and buffer name`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        // @Object("com.example.Nested:ttHeader")
+                        FIELD summary AS HANDLE.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val summaryField = tt.fields.properties.find { it.name == "summary" }!!
+        assertTrue(summaryField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.OBJECT, summaryField.tempTableKind)
+        assertEquals("com.example.Nested", summaryField.tempTableClass)
+        assertEquals("ttHeader", summaryField.tempTableName)
+    }
+
+    @Test
+    fun `parses bare @Array on FIELD line using convention`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        // @Array
+                        FIELD lines   AS HANDLE.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val linesField = tt.fields.properties.find { it.name == "lines" }!!
+        assertTrue(linesField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, linesField.tempTableKind)
+        assertNull(linesField.tempTableClass)
+        assertEquals("ttLines", linesField.tempTableName)
+    }
+
+    @Test
+    fun `HANDLE field without annotation is not a nested temp-table`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD raw   AS HANDLE
+                        FIELD orderId AS INTEGER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val rawField = tt.fields.properties.find { it.name == "raw" }!!
+        assertFalse(rawField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.NONE, rawField.tempTableKind)
+    }
+
+    @Test
+    fun `non-HANDLE field with @Array annotation is still not a temp-table`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        // @Array
+                        FIELD label AS CHARACTER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val labelField = tt.fields.properties.find { it.name == "label" }!!
+        assertFalse(labelField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.NONE, labelField.tempTableKind)
+    }
 }
