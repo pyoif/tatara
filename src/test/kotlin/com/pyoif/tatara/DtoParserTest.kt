@@ -534,3 +534,4 @@ class DtoParserTest {
         assertEquals(DtoParser.TempTableKind.NONE, labelField.tempTableKind)
     }
 }
+

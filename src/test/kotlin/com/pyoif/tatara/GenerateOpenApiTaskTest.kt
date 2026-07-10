@@ -869,4 +869,58 @@ class GenerateOpenApiTaskTest {
         val swagger = out.resolve("swagger.json").readText()
         assertTrue(swagger.contains("\"orderId\""), "orderId should be present. Got:\n$swagger")
     }
+
+    @Test
+    fun `nested temp-tables in same class are emitted as typed arrays via explicit buffer name`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "repositories/project/ProjectRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.ProjectRepository:
+                    // @Object(":tt-project-header")
+                    DEFINE PUBLIC PROPERTY data    AS HANDLE.
+                    DEFINE PUBLIC PROPERTY success AS LOGICAL.
+                    DEFINE TEMP-TABLE tt-project-header NO-UNDO
+                        FIELD projectGroup     AS CHARACTER
+                        FIELD realizedValue    AS DECIMAL
+                        // @Array(":tt-spk")
+                        FIELD spk              AS HANDLE
+                        // @Array(":tt-spp")
+                        FIELD spp              AS HANDLE.
+                    DEFINE TEMP-TABLE tt-spk NO-UNDO
+                        FIELD spkId   AS INTEGER
+                        FIELD spkName AS CHARACTER.
+                    DEFINE TEMP-TABLE tt-spp NO-UNDO
+                        FIELD sppId   AS INTEGER
+                        FIELD sppName AS CHARACTER.
+            """.trimIndent())
+        }
+        File(src, "repositories/project/ProjectRepositoryController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.ProjectRepositoryController:
+                    // @GET("/api/projects/detail")
+                    METHOD PUBLIC repositories.project.ProjectRepository GetDetail():
+                        DEFINE VARIABLE ctrl0 AS repositories.project.ProjectRepositoryController NO-UNDO.
+                        ctrl0 = NEW repositories.project.ProjectRepositoryController().
+                        RETURN NEW repositories.project.ProjectRepository().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "repositories.project.ProjectRepositoryController", "/api/projects/detail")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"projectGroup\""), "outer should have projectGroup. Got:\n$swagger")
+        assertTrue(swagger.contains("\"realizedValue\""), "outer should have realizedValue. Got:\n$swagger")
+        assertTrue(swagger.contains("\"spkId\""), "nested spk should have spkId. Got:\n$swagger")
+        assertTrue(swagger.contains("\"spkName\""), "nested spk should have spkName. Got:\n$swagger")
+        assertTrue(swagger.contains("\"sppId\""), "nested spp should have sppId. Got:\n$swagger")
+        assertTrue(swagger.contains("\"sppName\""), "nested spp should have sppName. Got:\n$swagger")
+    }
 }
+
