@@ -304,4 +304,115 @@ class DtoParserTest {
         val tt = DtoParser.parseInlineTempTableByName("com.example.User", src, "ttAnything")
         assertNull(tt)
     }
+
+    @Test
+    fun `parses @Array with class name only`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @Array("com.example.Order")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, prop.tempTableKind)
+        assertEquals("com.example.Order", prop.tempTableClass)
+        assertNull(prop.tempTableName)
+    }
+
+    @Test
+    fun `parses @Object with class name only`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @Object("com.example.Summary")
+                    DEFINE PUBLIC PROPERTY summary AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertEquals(DtoParser.TempTableKind.OBJECT, prop.tempTableKind)
+        assertEquals("com.example.Summary", prop.tempTableClass)
+        assertNull(prop.tempTableName)
+    }
+
+    @Test
+    fun `parses @Array with class and buffer name`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @Array("com.example.Order:ttOrders")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertEquals("com.example.Order", prop.tempTableClass)
+        assertEquals("ttOrders", prop.tempTableName)
+    }
+
+    @Test
+    fun `parses @Array with current class and explicit buffer via leading colon`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @Array(":ttCustom")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertNull(prop.tempTableClass)
+        assertEquals("ttCustom", prop.tempTableName)
+    }
+
+    @Test
+    fun `parses @Array without parameter preserves null fields`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertNull(prop.tempTableClass)
+        assertNull(prop.tempTableName)
+    }
+
+    @Test
+    fun `TempTable annotation drops any parameter syntax`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/User.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.User:
+                    // @TempTable("com.example.X:ttY")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.User", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, prop.tempTableKind)
+        assertNull(prop.tempTableClass)
+        assertNull(prop.tempTableName)
+    }
 }

@@ -16,7 +16,9 @@ object DtoParser {
         val isDto: Boolean = false,
         val nested: DtoInfo? = null,
         val isTempTable: Boolean = false,
-        val tempTableKind: TempTableKind = TempTableKind.NONE
+        val tempTableKind: TempTableKind = TempTableKind.NONE,
+        val tempTableClass: String? = null,
+        val tempTableName: String? = null
     )
 
     data class DtoInfo(
@@ -35,7 +37,7 @@ object DtoParser {
     private val propDefRegex = Regex(
         """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
-    private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body|TempTable|Object|Array)""")
+    private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body|TempTable|Object|Array)(?:\("([^"]*)"\))?""")
     private val ttDefRegex = Regex(
         """(?is)DEFINE\s+TEMP-TABLE\s+(\w+)([^.]+?)\."""
     )
@@ -58,6 +60,8 @@ object DtoParser {
         var loc = ParamLocation.UNKNOWN
         var isTempTable = false
         var tempTableKind = TempTableKind.NONE
+        var currentTempTableClass: String? = null
+        var currentTempTableName: String? = null
 
         val primitives = setOf(
             "CHARACTER", "LONGCHAR", "INTEGER", "INT64", "DECIMAL",
@@ -73,8 +77,28 @@ object DtoParser {
                     "path" -> { loc = ParamLocation.PATH; isReq = false }
                     "query" -> { loc = ParamLocation.QUERY; isReq = false }
                     "body" -> { loc = ParamLocation.BODY; isReq = false }
-                    "object" -> { isTempTable = true; tempTableKind = TempTableKind.OBJECT; isReq = false }
-                    "array", "temptable" -> { isTempTable = true; tempTableKind = TempTableKind.ARRAY; isReq = false }
+                    "object" -> {
+                        isTempTable = true
+                        tempTableKind = TempTableKind.OBJECT
+                        isReq = false
+                        val (cls, name) = parseTempTableParam(m.groupValues[2])
+                        currentTempTableClass = cls
+                        currentTempTableName = name
+                    }
+                    "array" -> {
+                        isTempTable = true
+                        tempTableKind = TempTableKind.ARRAY
+                        isReq = false
+                        val (cls, name) = parseTempTableParam(m.groupValues[2])
+                        currentTempTableClass = cls
+                        currentTempTableName = name
+                    }
+                    "temptable" -> {
+                        isTempTable = true
+                        tempTableKind = TempTableKind.ARRAY
+                        isReq = false
+                        // @TempTable is a bare alias — drop any parameter syntax.
+                    }
                 }
             }
 
@@ -110,12 +134,16 @@ object DtoParser {
                     isDto = isDto,
                     nested = nested,
                     isTempTable = isTempTable,
-                    tempTableKind = tempTableKind
+                    tempTableKind = tempTableKind,
+                    tempTableClass = currentTempTableClass,
+                    tempTableName = currentTempTableName
                 ))
                 // Reset @Required and @TempTable kind — location sticks until next @Path/@Query/@Body
                 isReq = false
                 isTempTable = false
                 tempTableKind = TempTableKind.NONE
+                currentTempTableClass = null
+                currentTempTableName = null
             }
         }
         return DtoInfo(properties)
@@ -163,5 +191,17 @@ object DtoParser {
         val relativePath = dtoClassName.replace(".", "/") + ".cls"
         val file = File(srcRoot, relativePath)
         return if (file.exists()) file else null
+    }
+
+    private data class TempTableParam(val tempTableClass: String?, val tempTableName: String?)
+
+    private fun parseTempTableParam(raw: String?): TempTableParam {
+        if (raw.isNullOrEmpty()) return TempTableParam(null, null)
+        val colon = raw.indexOf(':')
+        return when {
+            colon < 0  -> TempTableParam(raw, null)
+            colon == 0 -> TempTableParam(null, raw.substring(1))
+            else       -> TempTableParam(raw.substring(0, colon), raw.substring(colon + 1))
+        }
     }
 }
