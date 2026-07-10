@@ -575,4 +575,221 @@ class GenerateOpenApiTaskTest {
         val swagger = out.resolve("swagger.json").readText()
         assertTrue(swagger.contains("\"orderId\""), "should resolve ttItems by convention. Got:\n$swagger")
     }
+
+    @Test
+    fun `emits typed nested array schema from inline temp-table fields`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Nested:ttLines")
+                        FIELD lines   AS HANDLE.
+            """.trimIndent())
+        }
+        File(src, "com/example/Nested.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Nested:
+                    DEFINE TEMP-TABLE ttLines NO-UNDO
+                        FIELD lineNo  AS INTEGER
+                        FIELD text    AS CHARACTER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"lineNo\""), "should include nested lineNo. Got:\n$swagger")
+        assertTrue(swagger.contains("\"text\""), "should include nested text. Got:\n$swagger")
+    }
+
+    @Test
+    fun `nested @Array falls back to generic when target class missing`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Missing:ttX")
+                        FIELD lines AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "outer orderId should be present. Got:\n$swagger")
+        assertTrue(swagger.contains("\"additionalProperties\": true"), "should include generic fallback. Got:\n$swagger")
+    }
+
+    @Test
+    fun `nested temp-table cycle emits generic schema and does not infinite loop`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Order:ttItems")
+                        FIELD children AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "outer orderId should still be present. Got:\n$swagger")
+    }
+
+    @Test
+    fun `cross-class @Array with dashed buffer name resolves fields`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "Budgets.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS Budgets:
+                    // @Array("repositories.project.BudgetRepository:tt-budget")
+                    DEFINE PUBLIC PROPERTY data       AS HANDLE                 NO-UNDO GET. SET.
+                    DEFINE PUBLIC PROPERTY pagination AS DTO.response.Pagination NO-UNDO GET. SET.
+                    DEFINE PUBLIC PROPERTY success    AS LOGICAL                NO-UNDO INIT TRUE GET. SET.
+                END CLASS.
+            """.trimIndent())
+        }
+        File(src, "repositories/project/BudgetRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.BudgetRepository:
+                    DEFINE TEMP-TABLE tt-budget NO-UNDO
+                        FIELD id     AS INTEGER
+                        FIELD amount AS DECIMAL.
+            """.trimIndent())
+        }
+        File(src, "DTO/response/Pagination.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS DTO.response.Pagination:
+                    DEFINE PUBLIC PROPERTY page  AS INTEGER.
+                    DEFINE PUBLIC PROPERTY total AS INTEGER.
+            """.trimIndent())
+        }
+        File(src, "BudgetController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS BudgetController:
+                    // @GET("/svc/budgets")
+                    METHOD PUBLIC Budgets GetBudgets():
+                        DEFINE VARIABLE ctrl0 AS BudgetController NO-UNDO.
+                        ctrl0 = NEW BudgetController().
+                        RETURN NEW Budgets().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "BudgetController", "/svc/budgets")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"id\""), "should include id field from tt-budget. Got:\n$swagger")
+        assertTrue(swagger.contains("\"amount\""), "should include amount field from tt-budget. Got:\n$swagger")
+    }
+
+    @Test
+    fun `HANDLE field without annotation stays as generic handle`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        FIELD rawHandle AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "orderId should be present. Got:\n$swagger")
+    }
 }

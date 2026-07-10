@@ -362,6 +362,26 @@ class DtoParserTest {
     }
 
     @Test
+    fun `parses @Array with dashed buffer name like tt-budget`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "repositories/project/BudgetRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.BudgetRepository:
+                    DEFINE TEMP-TABLE tt-budget NO-UNDO
+                        FIELD id     AS INTEGER
+                        FIELD amount AS DECIMAL.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTableByName("repositories.project.BudgetRepository", src, "tt-budget")
+        assertNotNull(tt)
+        assertEquals("tt-budget", tt!!.bufferName)
+        assertEquals(2, tt.fields.properties.size)
+        assertEquals("id", tt.fields.properties[0].name)
+        assertEquals("amount", tt.fields.properties[1].name)
+    }
+
+    @Test
     fun `parses @Array with current class and explicit buffer via leading colon`(@TempDir tmp: Path) {
         val src = tmp.toFile()
         File(src, "com/example/User.cls").apply {

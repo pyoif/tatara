@@ -35,14 +35,14 @@ object DtoParser {
     )
 
     private val propDefRegex = Regex(
-        """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
+        """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+([\w-]+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
     private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body|TempTable|Object|Array)(?:\("([^"]*)"\))?""")
     private val ttDefRegex = Regex(
-        """(?is)DEFINE\s+TEMP-TABLE\s+(\w+)((?:[^."]|"[^"]*")+?)\."""
+        """(?is)DEFINE\s+TEMP-TABLE\s+([\w-]+)((?:[^."]|"[^"]*")+?)\."""
     )
     private val fieldDefRegex = Regex(
-        """(?i)FIELD\s+(\w+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
+        """(?i)FIELD\s+([\w-]+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
 
     fun parse(
