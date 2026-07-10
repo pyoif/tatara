@@ -177,7 +177,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                 val propSchema = when (p.tempTableKind) {
                     DtoParser.TempTableKind.ARRAY -> {
                         if (inlineTt != null) {
-                            val typedObj = buildTempTableObjectSchema(inlineTt.fields)
+                            val typedObj = buildTempTableObjectSchema(inlineTt.fields, pkgRoot, dtoClass)
                             JsonObject().apply {
                                 addProperty("type", "array")
                                 add("items", typedObj)
@@ -196,7 +196,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                     }
                     DtoParser.TempTableKind.OBJECT -> {
                         if (inlineTt != null) {
-                            buildTempTableObjectSchema(inlineTt.fields).apply {
+                            buildTempTableObjectSchema(inlineTt.fields, pkgRoot, dtoClass).apply {
                                 if (desc != null) addProperty("description", desc)
                             }
                         } else {
@@ -229,10 +229,49 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         schemas.add(nameOnly, schema)
     }
 
-    private fun buildTempTableObjectSchema(fields: DtoParser.DtoInfo): JsonObject {
+    private fun buildTempTableObjectSchema(
+        fields: DtoParser.DtoInfo,
+        pkgRoot: File,
+        parentClass: String,
+        visited: MutableSet<String> = mutableSetOf()
+    ): JsonObject {
         val innerProps = JsonObject()
         fields.properties.forEach { p ->
-            innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, JsonObject()))
+            if (p.isTempTable) {
+                val srcClass = p.tempTableClass ?: parentClass
+                val bufName = p.tempTableName ?: ("tt" + p.name.replaceFirstChar { it.uppercase() })
+                val key = "$srcClass::$bufName"
+                if (key in visited) {
+                    logger.warn("Cycle detected for nested temp-table '$key' (prop '${p.name}'); emitting generic schema.")
+                    innerProps.add(p.name, JsonObject().apply {
+                        addProperty("type", "object")
+                        addProperty("additionalProperties", true)
+                    })
+                } else {
+                    val nestedTt = DtoParser.parseInlineTempTableByName(srcClass, pkgRoot, bufName)
+                    if (nestedTt == null) {
+                        logger.warn("Nested temp-table '$bufName' not found in class '$srcClass' (prop '${p.name}'); emitting generic schema.")
+                        innerProps.add(p.name, JsonObject().apply {
+                            addProperty("type", "object")
+                            addProperty("additionalProperties", true)
+                        })
+                    } else {
+                        visited.add(key)
+                        val typedObj = buildTempTableObjectSchema(nestedTt.fields, pkgRoot, srcClass, visited)
+                        visited.remove(key)
+                        when (p.tempTableKind) {
+                            DtoParser.TempTableKind.ARRAY -> innerProps.add(p.name, JsonObject().apply {
+                                addProperty("type", "array")
+                                add("items", typedObj)
+                            })
+                            DtoParser.TempTableKind.OBJECT -> innerProps.add(p.name, typedObj)
+                            DtoParser.TempTableKind.NONE -> { /* unreachable */ }
+                        }
+                    }
+                }
+            } else {
+                innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, JsonObject()))
+            }
         }
         return JsonObject().apply {
             addProperty("type", "object")
