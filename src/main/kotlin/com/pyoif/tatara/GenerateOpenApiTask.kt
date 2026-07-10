@@ -72,16 +72,16 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val parameters = JsonObject()
         val paths = JsonObject()
         val handlersFiles = handlersRoot.walkTopDown().filter { it.isFile && it.extension == "handlers" }.toList()
-        val responseDtoClasses = mutableSetOf<String>()
+        val dtoSchemaNames = mutableMapOf<String, String>()
 
-        // First pass: collect response DTOs only
+        // First pass: collect DTO classes and their derived schema names
         handlersFiles.forEach { handlersFile ->
-            collectResponseDtosFromHandlers(handlersFile, genRoot, pkgRoot, responseDtoClasses, routeParser)
+            collectResponseDtosFromHandlers(handlersFile, genRoot, pkgRoot, dtoSchemaNames, routeParser)
         }
 
-        // Add all response DTOs to schemas
-        responseDtoClasses.forEach { dtoClass ->
-            addDtoToSchemas(dtoClass, pkgRoot, schemas)
+        // Add all DTOs to schemas using their derived names
+        dtoSchemaNames.forEach { (dtoClass, schemaName) ->
+            addDtoToSchemas(dtoClass, pkgRoot, schemas, schemaName, dtoSchemaNames)
         }
 
         schemas.add("ErrorResponse", JsonObject().apply {
@@ -94,7 +94,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
 
         // Second pass: build paths
         handlersFiles.forEach { handlersFile ->
-            buildPathsFromHandlers(handlersFile, genRoot, pkgRoot, paths, schemas, parameters, routeParser)
+            buildPathsFromHandlers(handlersFile, genRoot, pkgRoot, paths, schemas, parameters, routeParser, dtoSchemaNames)
         }
 
         val swagger = JsonObject().apply {
@@ -119,7 +119,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         logger.lifecycle("Generated OpenAPI spec: ${outFile.absolutePath} (${paths.size()} paths, ${schemas.size()} schemas)")
     }
 
-    private fun collectResponseDtosFromHandlers(handlersFile: File, genRoot: File, pkgRoot: File, dtoClasses: MutableSet<String>, routeParser: RouteParser) {
+    private fun collectResponseDtosFromHandlers(handlersFile: File, genRoot: File, pkgRoot: File, dtoSchemaNames: MutableMap<String, String>, routeParser: RouteParser) {
         val handlersJson = try {
             JsonParser.parseString(handlersFile.readText()).asJsonObject
         } catch (e: Exception) {
@@ -131,31 +131,54 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             val handler = handlerEl.asJsonObject
             val clsName = handler.get("class")?.asString?.replace(".", "/") ?: return@forEach
             val shimFile = File(genRoot, "$clsName.cls")
-            
+
             if (!shimFile.exists()) return@forEach
-            
+
             val shimContent = shimFile.readText()
             val ctrlRegex = Regex("""ctrl\d+\s*=\s*NEW\s+([\w.]+)\(\)""")
             val ctrlMatch = ctrlRegex.find(shimContent) ?: return@forEach
             val ctrlClass = ctrlMatch.groupValues[1]
-            
+
             val ctrlFile = findSourceFile(pkgRoot, ctrlClass) ?: return@forEach
             val routes = routeParser.extractRoutesFromFile(ctrlFile)
-            
+
             routes.forEach { route ->
+                val fullPath = "/" + route.routePath
                 if (route.responseDtoClassName != null && route.responseDtoClassName.uppercase() != "VOID") {
-                    dtoClasses.add(route.responseDtoClassName)
+                    if (route.responseDtoClassName !in dtoSchemaNames) {
+                        dtoSchemaNames[route.responseDtoClassName] =
+                            deriveRouteSchemaName(fullPath, route.responseDtoClassName, "Response")
+                    }
+                }
+                if (route.requestDtoClassName != null && route.requestDtoClassName != "Tatara.Api.RequestContext") {
+                    if (route.requestDtoClassName !in dtoSchemaNames) {
+                        dtoSchemaNames[route.requestDtoClassName] =
+                            deriveRouteSchemaName(fullPath, route.requestDtoClassName, "Request")
+                    }
                 }
             }
         }
     }
 
-    private fun addDtoToSchemas(dtoClass: String, pkgRoot: File, schemas: JsonObject) {
+    private fun deriveRouteSchemaName(routePath: String, dtoClass: String, suffix: String): String {
+        val segments = routePath.trimStart('/').split('/').filter { it.isNotBlank() && !it.startsWith("{") }
+        val prefix = segments.joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
+        val dtoShort = dtoClass.substringAfterLast('.')
+        return if (prefix.isEmpty()) dtoShort else "$prefix.$suffix$dtoShort"
+    }
+
+    private fun addDtoToSchemas(
+        dtoClass: String,
+        pkgRoot: File,
+        schemas: JsonObject,
+        schemaName: String? = null,
+        dtoSchemaNames: Map<String, String> = emptyMap()
+    ) {
         val dtoFile = findSourceFile(pkgRoot, dtoClass) ?: return
         val dto = DtoParser.parse(dtoClass, pkgRoot)
         if (dto == DtoParser.DtoInfo.EMPTY) return
 
-        val nameOnly = dtoClass.substringAfterLast('.')
+        val nameOnly = schemaName ?: dtoSchemaNames[dtoClass] ?: dtoClass.substringAfterLast('.')
         if (schemas.has(nameOnly)) return  // Already added
 
         val innerProps = JsonObject()
@@ -214,9 +237,9 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                 // Recurse into nested DTOs so referenced class schemas are added.
                 val upper = p.ablType.uppercase()
                 if (upper !in typeMap && upper != "VOID") {
-                    addDtoToSchemas(p.ablType, pkgRoot, schemas)
+                    addDtoToSchemas(p.ablType, pkgRoot, schemas, null, dtoSchemaNames)
                 }
-                innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, schemas))
+                innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, schemas, dtoSchemaNames))
             }
             if (p.isRequired) requiredArr.add(p.name)
         }
@@ -270,7 +293,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                     }
                 }
             } else {
-                innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, JsonObject()))
+                innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, JsonObject(), emptyMap()))
             }
         }
         return JsonObject().apply {
@@ -279,7 +302,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         }
     }
 
-    private fun mapAblType(abType: String, extent: String?, schemas: JsonObject): JsonObject {
+    private fun mapAblType(abType: String, extent: String?, schemas: JsonObject, dtoSchemaNames: Map<String, String>): JsonObject {
         val key = abType.uppercase()
         val typeObj = if (key in typeMap) {
             JsonObject().apply {
@@ -289,7 +312,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                 }
             }
         } else {
-            val nameOnly = abType.substringAfterLast('.')
+            val nameOnly = dtoSchemaNames[abType] ?: abType.substringAfterLast('.')
             JsonObject().apply { addProperty("\$ref", "#/components/schemas/$nameOnly") }
         }
         if (extent != null) {
@@ -309,7 +332,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         return file.takeIf { it.exists() }
     }
 
-    private fun buildPathsFromHandlers(handlersFile: File, genRoot: File, pkgRoot: File, paths: JsonObject, schemas: JsonObject, parameters: JsonObject, routeParser: RouteParser) {
+    private fun buildPathsFromHandlers(handlersFile: File, genRoot: File, pkgRoot: File, paths: JsonObject, schemas: JsonObject, parameters: JsonObject, routeParser: RouteParser, dtoSchemaNames: Map<String, String>) {
         val handlersJson = try {
             JsonParser.parseString(handlersFile.readText()).asJsonObject
         } catch (e: Exception) {
@@ -354,12 +377,12 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             routes.forEach { route ->
                 val fullPath = "/" + route.routePath
                 logger.lifecycle("Adding path: $fullPath [${route.httpMethod}]")
-                buildPathFromRoute(route, fullPath, paths, schemas, parameters, pkgRoot)
+                buildPathFromRoute(route, fullPath, paths, schemas, parameters, pkgRoot, dtoSchemaNames)
             }
         }
     }
 
-    private fun buildPathFromRoute(route: RouteDef, fullPath: String, paths: JsonObject, schemas: JsonObject, parameters: JsonObject, pkgRoot: File) {
+    private fun buildPathFromRoute(route: RouteDef, fullPath: String, paths: JsonObject, schemas: JsonObject, parameters: JsonObject, pkgRoot: File, dtoSchemaNames: Map<String, String>) {
         val pathObj = JsonObject()
         val params = JsonArray()
         val pathParamNames = route.pathParams.toSet()
@@ -379,13 +402,8 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         if (route.requestDtoClassName != null && route.requestDtoClassName != "Tatara.Api.RequestContext") {
             if (supportsRequestBody) {
                 // For POST/PUT/PATCH: add full DTO to schemas as requestBody
-                val reqName = route.requestDtoClassName.substringAfterLast('.')
-                
-                // Add request DTO to schemas if not already there
-                if (!schemas.has(reqName)) {
-                    addDtoToSchemas(route.requestDtoClassName, pkgRoot, schemas)
-                }
-                
+                val reqName = dtoSchemaNames[route.requestDtoClassName] ?: route.requestDtoClassName.substringAfterLast('.')
+
                 pathObj.add("requestBody", JsonObject().apply {
                     addProperty("required", true)
                     add("content", JsonObject().apply {
@@ -397,7 +415,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                     })
                 })
             }
-            
+
             // Extract query parameters from DTO (for all methods) — inline in path
             val dtoInfo = DtoParser.parse(route.requestDtoClassName, pkgRoot)
             dtoInfo.properties.forEach { prop ->
@@ -410,10 +428,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
                             }
                         }
                     } else {
-                        val refName = prop.ablType.substringAfterLast('.')
-                        if (!schemas.has(refName)) {
-                            addDtoToSchemas(prop.ablType, pkgRoot, schemas)
-                        }
+                        val refName = dtoSchemaNames[prop.ablType] ?: prop.ablType.substringAfterLast('.')
                         JsonObject().apply { addProperty("\$ref", "#/components/schemas/$refName") }
                     }
 
@@ -447,7 +462,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val resp200 = JsonObject().apply {
             addProperty("description", "Success")
             if (route.responseDtoClassName != null && route.responseDtoClassName.uppercase() != "VOID") {
-                val respName = route.responseDtoClassName.substringAfterLast('.')
+                val respName = dtoSchemaNames[route.responseDtoClassName] ?: route.responseDtoClassName.substringAfterLast('.')
                 add("content", JsonObject().apply {
                     add("application/json", JsonObject().apply {
                         add("schema", JsonObject().apply {

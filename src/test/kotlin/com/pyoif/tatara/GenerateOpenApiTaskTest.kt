@@ -757,6 +757,83 @@ class GenerateOpenApiTaskTest {
     }
 
     @Test
+    fun `top-level response DTO schema name derives from route path`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/api/filters/divisions")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/api/filters/divisions")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains(""""ApiFiltersDivisions.ResponseOrder":"""),
+            "schema should use route-derived name. Got:\n$swagger")
+        assertTrue(swagger.contains("\$ref\": \"#/components/schemas/ApiFiltersDivisions.ResponseOrder"),
+            "path response should ref derived name. Got:\n$swagger")
+    }
+
+    @Test
+    fun `top-level request DTO schema name derives from route path with Request suffix`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @POST("/api/filters/divisions")
+                    METHOD PUBLIC com.example.Order CreateOrder(INPUT poReq AS com.example.CreateOrderRequest):
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE PUBLIC PROPERTY id AS INTEGER.
+            """.trimIndent())
+        }
+        File(src, "com/example/CreateOrderRequest.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.CreateOrderRequest:
+                    DEFINE PUBLIC PROPERTY name AS CHARACTER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/api/filters/divisions")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("ApiFiltersDivisions.RequestCreateOrderRequest"),
+            "request body should use route-derived name. Got:\n$swagger")
+    }
+
+    @Test
     fun `HANDLE field without annotation stays as generic handle`(@TempDir tmp: Path) {
         val src = tmp.resolve("src").toFile()
         val handlers = tmp.resolve("handlers").toFile()
