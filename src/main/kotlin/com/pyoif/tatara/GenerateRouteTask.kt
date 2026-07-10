@@ -470,10 +470,17 @@ abstract class GenerateRoutesTask : DefaultTask() {
             when {
                 prop.isExtent -> emitExtentBranch(sb, "oJson", prop, oResultAccessor)
                 prop.isTempTable -> {
-                    val helper = when (prop.tempTableKind) {
-                        DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
-                        DtoParser.TempTableKind.OBJECT -> "ReadTempTableAsObject"
-                        DtoParser.TempTableKind.NONE -> null
+                    val helper = when {
+                        prop.isDataset -> when (prop.tempTableKind) {
+                            DtoParser.TempTableKind.ARRAY -> "ReadDatasetAsArray"
+                            DtoParser.TempTableKind.OBJECT -> "ReadDatasetAsObject"
+                            else -> null
+                        }
+                        else -> when (prop.tempTableKind) {
+                            DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
+                            DtoParser.TempTableKind.OBJECT -> "ReadTempTableAsObject"
+                            DtoParser.TempTableKind.NONE -> null
+                        }
                     }
                     if (helper != null) {
                         sb.append("\t\toJson:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:$helper($propAccessor)).\r\n")
@@ -504,10 +511,17 @@ abstract class GenerateRoutesTask : DefaultTask() {
             when {
                 prop.isExtent -> emitExtentBranch(sb, subObjName, prop, oResultAccessor)
                 prop.isTempTable -> {
-                    val helper = when (prop.tempTableKind) {
-                        DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
-                        DtoParser.TempTableKind.OBJECT -> "ReadTempTableAsObject"
-                        DtoParser.TempTableKind.NONE -> null
+                    val helper = when {
+                        prop.isDataset -> when (prop.tempTableKind) {
+                            DtoParser.TempTableKind.ARRAY -> "ReadDatasetAsArray"
+                            DtoParser.TempTableKind.OBJECT -> "ReadDatasetAsObject"
+                            else -> null
+                        }
+                        else -> when (prop.tempTableKind) {
+                            DtoParser.TempTableKind.ARRAY -> "ReadTempTableAsArray"
+                            DtoParser.TempTableKind.OBJECT -> "ReadTempTableAsObject"
+                            DtoParser.TempTableKind.NONE -> null
+                        }
                     }
                     if (helper != null) {
                         sb.append("\t\t$subObjName:Add(\"${prop.name}\", Tatara.Api.DtoSerializer:$helper($propAccessor)).\r\n")

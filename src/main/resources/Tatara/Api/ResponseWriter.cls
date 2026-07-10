@@ -32,6 +32,7 @@ CLASS Tatara.Api.ResponseWriter:
         DEFINE VARIABLE oJson      AS Progress.Json.ObjectModel.JsonObject NO-UNDO.
 
         poResponse:StatusCode = piStatusCode.
+        poResponse:ContentType   = "application/json".
 
         oJson = NEW JsonObject().
         oJson:Add("error", pcErrorMessage).

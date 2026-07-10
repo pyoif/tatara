@@ -922,5 +922,188 @@ class GenerateOpenApiTaskTest {
         assertTrue(swagger.contains("\"sppId\""), "nested spp should have sppId. Got:\n$swagger")
         assertTrue(swagger.contains("\"sppName\""), "nested spp should have sppName. Got:\n$swagger")
     }
+
+    @Test
+    fun `dataset @Array emits parent + nested child TTs with SERIALIZE names`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "repositories/project/OrderRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.OrderRepository:
+                    DEFINE TEMP-TABLE ttOrder SERIALIZE-NAME "order" NO-UNDO
+                        FIELD orderId AS INTEGER SERIALIZE-NAME "id"
+                        FIELD total   AS DECIMAL
+                        FIELD lines   AS HANDLE.
+                    DEFINE TEMP-TABLE ttLine SERIALIZE-NAME "line" NO-UNDO
+                        FIELD lineNo AS INTEGER SERIALIZE-NAME "no"
+                        FIELD sku    AS CHARACTER.
+                    DEFINE DATASET dsOrder FOR ttOrder, ttLine
+                        DATA-RELATION rel1 FOR ttOrder, ttLine RELATION-FIELDS(orderId, orderId).
+            """.trimIndent())
+        }
+        File(src, "OrderResponse.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponse:
+                    // @Array("repositories.project.OrderRepository:dsOrder")
+                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+                    DEFINE PUBLIC PROPERTY success AS LOGICAL.
+            """.trimIndent())
+        }
+        File(src, "OrderResponseController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponseController:
+                    // @GET("/api/orders")
+                    METHOD PUBLIC OrderResponse GetOrders():
+                        DEFINE VARIABLE ctrl0 AS OrderResponseController NO-UNDO.
+                        ctrl0 = NEW OrderResponseController().
+                        RETURN NEW OrderResponse().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "OrderResponseController", "/api/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        // Parent fields use SERIALIZE-NAME
+        assertTrue(swagger.contains("\"id\""), "parent should have 'id' (field SERIALIZE-NAME). Got:\n$swagger")
+        assertTrue(swagger.contains("\"total\""), "parent should have 'total'. Got:\n$swagger")
+        // Child TT under its SERIALIZE-NAME as nested array
+        assertTrue(swagger.contains("\"line\""), "child should be nested under 'line' (TT SERIALIZE-NAME). Got:\n$swagger")
+        assertTrue(swagger.contains("\"no\""), "child should have 'no' (field SERIALIZE-NAME). Got:\n$swagger")
+        assertTrue(swagger.contains("\"sku\""), "child should have 'sku'. Got:\n$swagger")
+        // Top is an array
+        assertTrue(swagger.contains("\"type\": \"array\""), "data should be array. Got:\n$swagger")
+    }
+
+    @Test
+    fun `dataset @Object emits single record schema with no array wrapper`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "repositories/project/OrderRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.OrderRepository:
+                    DEFINE TEMP-TABLE ttOrder NO-UNDO
+                        FIELD orderId AS INTEGER.
+                    DEFINE DATASET dsOrder FOR ttOrder.
+            """.trimIndent())
+        }
+        File(src, "OrderResponse.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponse:
+                    // @Object("repositories.project.OrderRepository:dsOrder")
+                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+            """.trimIndent())
+        }
+        File(src, "OrderResponseController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponseController:
+                    // @GET("/api/order")
+                    METHOD PUBLIC OrderResponse GetOrder():
+                        DEFINE VARIABLE ctrl0 AS OrderResponseController NO-UNDO.
+                        ctrl0 = NEW OrderResponseController().
+                        RETURN NEW OrderResponse().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "OrderResponseController", "/api/order")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "should have orderId. Got:\n$swagger")
+    }
+
+    @Test
+    fun `child TT @Object changes nested shape to single object`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "repositories/project/OrderRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.OrderRepository:
+                    DEFINE TEMP-TABLE ttOrder NO-UNDO
+                        FIELD orderId AS INTEGER
+                        FIELD lines   AS HANDLE.
+                    // @Object
+                    DEFINE TEMP-TABLE ttLine NO-UNDO
+                        FIELD lineNo AS INTEGER.
+                    DEFINE DATASET dsOrder FOR ttOrder, ttLine
+                        DATA-RELATION rel1 FOR ttOrder, ttLine RELATION-FIELDS(orderId, orderId).
+            """.trimIndent())
+        }
+        File(src, "OrderResponse.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponse:
+                    // @Array("repositories.project.OrderRepository:dsOrder")
+                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+            """.trimIndent())
+        }
+        File(src, "OrderResponseController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponseController:
+                    // @GET("/api/order")
+                    METHOD PUBLIC OrderResponse GetOrder():
+                        DEFINE VARIABLE ctrl0 AS OrderResponseController NO-UNDO.
+                        ctrl0 = NEW OrderResponseController().
+                        RETURN NEW OrderResponse().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "OrderResponseController", "/api/order")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"lineNo\""), "should have lineNo. Got:\n$swagger")
+    }
+
+    @Test
+    fun `dataset lookup miss falls back to generic with warning`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "OrderResponse.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponse:
+                    // @Array("repositories.project.Missing:dsX")
+                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+            """.trimIndent())
+        }
+        File(src, "OrderResponseController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS OrderResponseController:
+                    // @GET("/api/order")
+                    METHOD PUBLIC OrderResponse GetOrder():
+                        DEFINE VARIABLE ctrl0 AS OrderResponseController NO-UNDO.
+                        ctrl0 = NEW OrderResponseController().
+                        RETURN NEW OrderResponse().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "OrderResponseController", "/api/order")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"additionalProperties\": true"), "should fall back to generic. Got:\n$swagger")
+    }
 }
 

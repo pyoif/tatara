@@ -185,6 +185,13 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val requiredArr = JsonArray()
         dto.properties.forEach { p ->
             if (p.isTempTable) {
+                // Dispatch to dataset builder when this is a DATASET-HANDLE property
+                if (p.isDataset) {
+                    val propSchema = buildDatasetSchema(p, dtoClass, pkgRoot)
+                    innerProps.add(p.name, propSchema)
+                    if (p.isRequired) requiredArr.add(p.name)
+                    return@forEach
+                }
                 val srcClass = p.tempTableClass ?: dtoClass
                 val bufName = p.tempTableName ?: ("tt" + p.name.replaceFirstChar { it.uppercase() })
                 val inlineTt = DtoParser.parseInlineTempTableByName(srcClass, pkgRoot, bufName)
@@ -250,6 +257,129 @@ abstract class GenerateOpenApiTask : DefaultTask() {
             if (requiredArr.size() > 0) add("required", requiredArr)
         }
         schemas.add(nameOnly, schema)
+    }
+
+    private fun buildDatasetSchema(
+        prop: DtoParser.DtoProperty,
+        dtoClass: String,
+        pkgRoot: File
+    ): JsonObject {
+        // For DATASET-HANDLE, the dataset reference is "Class:datasetName".
+        // The parser already split on `:` into tempTableClass and tempTableName;
+        // reassemble here.
+        val raw = if (prop.tempTableClass != null && prop.tempTableName != null)
+            "${prop.tempTableClass}:${prop.tempTableName}"
+        else prop.tempTableClass
+        if (raw == null) {
+            return datasetFallback(prop)
+        }
+        val colon = raw.indexOf(':')
+        if (colon < 0) {
+            logger.warn("Dataset annotation for '${prop.name}' on '$dtoClass' missing ':' (got '$raw'); falling back to generic.")
+            return datasetFallback(prop)
+        }
+        val srcClass = raw.substring(0, colon)
+        val datasetName = raw.substring(colon + 1)
+
+        val dataset = DtoParser.parseDataset(srcClass, pkgRoot, datasetName)
+        if (dataset == null) {
+            logger.warn("Dataset '$datasetName' not found in class '$srcClass' (prop '${prop.name}' on '$dtoClass'); falling back to generic.")
+            return datasetFallback(prop)
+        }
+        val parentResult = DtoParser.parseInlineTempTableRaw(srcClass, pkgRoot, dataset.parentTable)
+        if (parentResult == null) {
+            logger.warn("Parent TT '${dataset.parentTable}' not found in class '$srcClass' (prop '${prop.name}' on '$dtoClass'); falling back to generic.")
+            return datasetFallback(prop)
+        }
+        val (parentTt, _) = parentResult
+        val recordSchema = buildDatasetRecordSchema(parentTt, dataset.tables, srcClass, pkgRoot)
+
+        return when (prop.tempTableKind) {
+            DtoParser.TempTableKind.OBJECT -> recordSchema
+            DtoParser.TempTableKind.ARRAY -> JsonObject().apply {
+                addProperty("type", "array")
+                add("items", recordSchema)
+            }
+            else -> datasetFallback(prop)
+        }
+    }
+
+    private fun datasetFallback(prop: DtoParser.DtoProperty): JsonObject {
+        val desc = when (prop.tempTableKind) {
+            DtoParser.TempTableKind.ARRAY -> "ABL dataset; field-level schema not modeled"
+            DtoParser.TempTableKind.OBJECT -> "ABL dataset (single-row); field-level schema not modeled"
+            else -> null
+        }
+        val inner = JsonObject().apply { addProperty("type", "object"); addProperty("additionalProperties", true) }
+        return when (prop.tempTableKind) {
+            DtoParser.TempTableKind.ARRAY -> JsonObject().apply {
+                addProperty("type", "array")
+                add("items", inner)
+                if (desc != null) addProperty("description", desc)
+            }
+            DtoParser.TempTableKind.OBJECT -> JsonObject().apply {
+                add("properties", JsonObject().apply { add(prop.name, inner) })
+                if (desc != null) addProperty("description", desc)
+            }
+            else -> inner
+        }
+    }
+
+    private fun buildDatasetRecordSchema(
+        parentTt: DtoParser.InlineTempTable,
+        allTables: List<String>,
+        srcClass: String,
+        pkgRoot: File
+    ): JsonObject {
+        val innerProps = JsonObject()
+        val childTableNames = allTables.drop(1).toSet()
+
+        parentTt.fields.properties.forEach { f ->
+            if (f.serializeHidden) return@forEach
+            // Skip HANDLE fields in parent that point to a child TT (by convention tt<FieldName>)
+            if (f.ablType.uppercase() == "HANDLE") {
+                val byConvention = "tt" + f.name.replaceFirstChar { it.uppercase() }
+                if (byConvention in childTableNames || f.name in childTableNames) return@forEach
+            }
+            val key = f.serializeName ?: f.name
+            innerProps.add(key, mapAblType(f.ablType, if (f.isExtent) "EXTENT" else null, JsonObject(), emptyMap()))
+        }
+
+        allTables.drop(1).forEach { childName ->
+            val childResult = DtoParser.parseInlineTempTableRaw(srcClass, pkgRoot, childName)
+            if (childResult == null) return@forEach
+            val (childTt, childSerializeName) = childResult
+            val childObj = buildDatasetChildObjectSchema(childTt)
+            val childKind = if (childTt.kind == DtoParser.TempTableKind.OBJECT) DtoParser.TempTableKind.OBJECT
+                            else DtoParser.TempTableKind.ARRAY
+            val key = childSerializeName ?: childName
+            innerProps.add(key, when (childKind) {
+                DtoParser.TempTableKind.ARRAY -> JsonObject().apply {
+                    addProperty("type", "array")
+                    add("items", childObj)
+                }
+                DtoParser.TempTableKind.OBJECT -> childObj
+                else -> childObj
+            })
+        }
+
+        return JsonObject().apply {
+            addProperty("type", "object")
+            add("properties", innerProps)
+        }
+    }
+
+    private fun buildDatasetChildObjectSchema(tt: DtoParser.InlineTempTable): JsonObject {
+        val innerProps = JsonObject()
+        tt.fields.properties.forEach { f ->
+            if (f.serializeHidden) return@forEach
+            val key = f.serializeName ?: f.name
+            innerProps.add(key, mapAblType(f.ablType, if (f.isExtent) "EXTENT" else null, JsonObject(), emptyMap()))
+        }
+        return JsonObject().apply {
+            addProperty("type", "object")
+            add("properties", innerProps)
+        }
     }
 
     private fun buildTempTableObjectSchema(

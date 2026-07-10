@@ -400,6 +400,50 @@ class GenerateRouteTaskEmitTest {
     }
 
     @Test
+    fun `emits ReadDatasetAsArray for DATASET-HANDLE @Array prop`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array("com.example.OrderRepo:dsOrder")
+                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+            """.trimIndent())
+        }
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrders():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/orders",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/orders",
+                httpMethod = "GET",
+                className = "com.example.OrderController",
+                ablMethod = "GetOrders",
+                responseDtoClassName = "com.example.Order"
+            )
+        )
+
+        assertTrue(shim.contains("Tatara.Api.DtoSerializer:ReadDatasetAsArray(oResult:data)"),
+            "shim should call ReadDatasetAsArray for DATASET-HANDLE @Array. SHIM:\n$shim")
+    }
+
+    @Test
     fun `emits 400 error for missing required query parameter`(@TempDir tmp: Path) {
         val src = tmp.resolve("src").toFile()
         File(src, "com/example/Order.cls").apply {

@@ -18,7 +18,10 @@ object DtoParser {
         val isTempTable: Boolean = false,
         val tempTableKind: TempTableKind = TempTableKind.NONE,
         val tempTableClass: String? = null,
-        val tempTableName: String? = null
+        val tempTableName: String? = null,
+        val isDataset: Boolean = false,
+        val serializeName: String? = null,
+        val serializeHidden: Boolean = false
     )
 
     data class DtoInfo(
@@ -31,19 +34,33 @@ object DtoParser {
 
     data class InlineTempTable(
         val bufferName: String,
-        val fields: DtoInfo
+        val fields: DtoInfo,
+        val serializeName: String? = null,
+        val kind: TempTableKind = TempTableKind.NONE
     )
 
+    data class DatasetInfo(
+        val name: String,
+        val tables: List<String>
+    ) {
+        val parentTable: String get() = tables.firstOrNull() ?: ""
+    }
+
     private val propDefRegex = Regex(
-        """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+([\w-]+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
+        """(?i)DEFINE\s+PUBLIC\s+PROPERTY\s+([\w-]+)\s+AS\s+([\w-]+(?:[.\-][\w-]+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
     private val annotationRegex = Regex("""(?i)//\s*@(Required|Path|Query|Body|TempTable|Object|Array)(?:\("([^"]*)"\))?""")
     private val ttDefRegex = Regex(
         """(?is)DEFINE\s+TEMP-TABLE\s+([\w-]+)((?:[^."]|"[^"]*")+?)\."""
     )
     private val fieldDefRegex = Regex(
-        """(?i)FIELD\s+([\w-]+)\s+AS\s+(\w+(?:[.-]\w+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
+        """(?i)FIELD\s+([\w-]+)\s+AS\s+([\w-]+(?:[.\-][\w-]+)*)(?:\s+(EXTENT(?:\s+\d+)?))?"""
     )
+    private val datasetDefRegex = Regex(
+        """(?is)DEFINE\s+DATASET\s+([\w-]+)\s+FOR\s+([\w\-, ]+?)(?=\s*(?:DATA-RELATION|\.|$))"""
+    )
+    private val serializeNameRegex = Regex("""(?i)SERIALIZE-NAME\s+"([^"]+)"""")
+    private val serializeHiddenRegex = Regex("""(?i)SERIALIZE-HIDDEN""")
 
     fun parse(
         dtoClassName: String,
@@ -136,7 +153,8 @@ object DtoParser {
                     isTempTable = isTempTable,
                     tempTableKind = tempTableKind,
                     tempTableClass = currentTempTableClass,
-                    tempTableName = currentTempTableName
+                    tempTableName = currentTempTableName,
+                    isDataset = ablType.uppercase() == "DATASET-HANDLE"
                 ))
                 // Reset @Required and @TempTable kind — location sticks until next @Path/@Query/@Body
                 isReq = false
@@ -159,6 +177,25 @@ object DtoParser {
     ): InlineTempTable? = parseAllInlineTempTables(dtoClassName, srcRoot)
         .firstOrNull { it.bufferName == bufferName }
 
+    fun parseInlineTempTableRaw(
+        dtoClassName: String,
+        srcRoot: File,
+        bufferName: String
+    ): Pair<InlineTempTable, String?>? = parseAllInlineTempTables(dtoClassName, srcRoot)
+        .firstOrNull { it.bufferName == bufferName }
+        ?.let { it to it.serializeName }
+
+    fun parseDataset(dtoClassName: String, srcRoot: File, datasetName: String): DatasetInfo? {
+        val file = resolveFile(dtoClassName, srcRoot) ?: return null
+        val content = file.readText()
+        val match = datasetDefRegex.find(content) ?: return null
+        if (match.groupValues[1] != datasetName) return null
+        val tablesRaw = match.groupValues[2]
+        val tables = tablesRaw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        if (tables.isEmpty()) return null
+        return DatasetInfo(datasetName, tables)
+    }
+
     private fun parseAllInlineTempTables(
         dtoClassName: String,
         srcRoot: File
@@ -171,10 +208,16 @@ object DtoParser {
             val body = ttMatch.groupValues[2]
             val properties = mutableListOf<DtoProperty>()
 
+            // TT-level SERIALIZE-NAME is on the DEFINE TEMP-TABLE line, not in the body.
+            val ttSerializeName = findTtSerializeName(content, bufferName)
+
             var isTempTable = false
             var tempTableKind = TempTableKind.NONE
             var currentTempTableClass: String? = null
             var currentTempTableName: String? = null
+            // TT-level kind: set by the first @Object/@Array/@TempTable annotation in the body.
+            // Used when the TT is referenced as a child in a dataset.
+            var ttLevelKind = TempTableKind.NONE
 
             body.lines().forEach { line ->
                 val trimmed = line.trim()
@@ -184,6 +227,7 @@ object DtoParser {
                         "object" -> {
                             isTempTable = true
                             tempTableKind = TempTableKind.OBJECT
+                            if (ttLevelKind == TempTableKind.NONE) ttLevelKind = TempTableKind.OBJECT
                             val (cls, name) = parseTempTableParam(m.groupValues[2])
                             currentTempTableClass = cls
                             currentTempTableName = name
@@ -191,6 +235,7 @@ object DtoParser {
                         "array" -> {
                             isTempTable = true
                             tempTableKind = TempTableKind.ARRAY
+                            if (ttLevelKind == TempTableKind.NONE) ttLevelKind = TempTableKind.ARRAY
                             val (cls, name) = parseTempTableParam(m.groupValues[2])
                             currentTempTableClass = cls
                             currentTempTableName = name
@@ -198,6 +243,7 @@ object DtoParser {
                         "temptable" -> {
                             isTempTable = true
                             tempTableKind = TempTableKind.ARRAY
+                            if (ttLevelKind == TempTableKind.NONE) ttLevelKind = TempTableKind.ARRAY
                             // bare alias — drop any parameter
                         }
                     }
@@ -209,11 +255,13 @@ object DtoParser {
                     val isExtent = m.groups[3]?.value != null
                     val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
 
+                    if (serializeHiddenRegex.containsMatchIn(trimmed)) {
+                        return@let
+                    }
+
+                    val fieldSerializeName = serializeNameRegex.find(trimmed)?.groupValues?.get(1)
+
                     val promoteToTempTable = isTempTable && ablType.uppercase() == "HANDLE"
-                    // Field-level: name follows the tt<FieldName> convention when the user
-                    // didn't specify a class (i.e. "search current class for tt<FieldName>").
-                    // When the user explicitly gave a class but no name, leave the name null
-                    // so the OpenAPI task applies the convention uniformly.
                     val effectiveName = when {
                         !promoteToTempTable                          -> null
                         currentTempTableName != null                 -> currentTempTableName
@@ -228,10 +276,10 @@ object DtoParser {
                         isTempTable = promoteToTempTable,
                         tempTableKind = if (promoteToTempTable) tempTableKind else TempTableKind.NONE,
                         tempTableClass = if (promoteToTempTable) currentTempTableClass else null,
-                        tempTableName = effectiveName
+                        tempTableName = effectiveName,
+                        serializeName = fieldSerializeName
                     ))
 
-                    // Reset after each field is emitted
                     isTempTable = false
                     tempTableKind = TempTableKind.NONE
                     currentTempTableClass = null
@@ -239,9 +287,17 @@ object DtoParser {
                 }
             }
 
-            results.add(InlineTempTable(bufferName, DtoInfo(properties)))
+            results.add(InlineTempTable(bufferName, DtoInfo(properties), ttSerializeName, ttLevelKind))
         }
         return results
+    }
+
+    private fun findTtSerializeName(content: String, bufferName: String): String? {
+        val regex = Regex(
+            """(?im)^\s*DEFINE\s+TEMP-TABLE\s+""" + Regex.escape(bufferName) +
+                """\b[^\n]*?SERIALIZE-NAME\s+"([^"]+)""""
+        )
+        return regex.find(content)?.groupValues?.get(1)
     }
 
     private fun resolveFile(dtoClassName: String, srcRoot: File): File? {

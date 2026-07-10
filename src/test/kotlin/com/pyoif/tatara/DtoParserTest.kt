@@ -533,5 +533,97 @@ class DtoParserTest {
         assertFalse(labelField.isTempTable)
         assertEquals(DtoParser.TempTableKind.NONE, labelField.tempTableKind)
     }
+
+    @Test
+    fun `parses DATASET-HANDLE property type`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("com.example.Order", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isDataset)
+    }
+
+    @Test
+    fun `parses DEFINE DATASET FOR t1, t2`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "repositories/project/OrderRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.OrderRepository:
+                    DEFINE TEMP-TABLE ttOrder NO-UNDO FIELD orderId AS INTEGER.
+                    DEFINE TEMP-TABLE ttLine  NO-UNDO FIELD lineNo AS INTEGER.
+                    DEFINE DATASET dsOrder FOR ttOrder, ttLine
+                        DATA-RELATION rel1 FOR ttOrder, ttLine RELATION-FIELDS(orderId, orderId).
+            """.trimIndent())
+        }
+        val ds = DtoParser.parseDataset("repositories.project.OrderRepository", src, "dsOrder")
+        assertNotNull(ds)
+        assertEquals("dsOrder", ds!!.name)
+        assertEquals("ttOrder", ds.parentTable)
+        assertEquals(listOf("ttOrder", "ttLine"), ds.tables)
+    }
+
+    @Test
+    fun `parses TT-level SERIALIZE-NAME`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttOrder SERIALIZE-NAME "order" NO-UNDO
+                        FIELD orderId AS INTEGER.
+            """.trimIndent())
+        }
+        val result = DtoParser.parseInlineTempTableRaw("com.example.Order", src, "ttOrder")
+        assertNotNull(result)
+        assertEquals("ttOrder", result!!.first.bufferName)
+        assertEquals("order", result.second)
+    }
+
+    @Test
+    fun `parses field-level SERIALIZE-NAME`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttOrder SERIALIZE-NAME "order" NO-UNDO
+                        FIELD orderId AS INTEGER SERIALIZE-NAME "id"
+                        FIELD total   AS DECIMAL.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val orderId = tt.fields.properties.find { it.name == "orderId" }!!
+        val total = tt.fields.properties.find { it.name == "total" }!!
+        assertEquals("id", orderId.serializeName)
+        assertNull(total.serializeName)
+    }
+
+    @Test
+    fun `omits SERIALIZE-HIDDEN fields`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttOrder NO-UNDO
+                        FIELD orderId AS INTEGER
+                        FIELD secret  AS CHARACTER SERIALIZE-HIDDEN
+                        FIELD total   AS DECIMAL.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        assertEquals(2, tt.fields.properties.size)
+        assertEquals("orderId", tt.fields.properties[0].name)
+        assertEquals("total", tt.fields.properties[1].name)
+        val secret = tt.fields.properties.find { it.name == "secret" }
+        assertNull(secret)
+    }
 }
 

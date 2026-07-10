@@ -20,9 +20,7 @@ class TataraPlugin : Plugin<Project> {
             dependsOn(setupPct)
         }
 
-        project.tasks.register("generateOpenApi", GenerateOpenApiTask::class.java) {
-            group = "tatara"
-            description = "Generates OpenAPI 3.0 swagger.json from handler annotations and DTO classes"
+        project.tasks.withType(GenerateOpenApiTask::class.java).configureEach {
             apiServerUrl.convention("/${project.name}/web")
         }
 
