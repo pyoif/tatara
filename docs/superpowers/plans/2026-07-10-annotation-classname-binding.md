@@ -16,6 +16,7 @@
 - Backward compatibility is required: all existing `// @Array`, `// @Object`, `// @TempTable` annotations must keep working unchanged.
 - `GenerateRouteTask.kt` is NOT modified. The shim does not need to know the buffer name.
 - Follow the existing test patterns: `@TempDir`, `File(src, "com/example/X.cls").apply { ... writeText(...) }`, `DtoParser.parse(className, src)`.
+- **Nested TTs (Tasks 3-4):** annotation must be present on a HANDLE-typed FIELD to be a nested TT; unannotated HANDLE fields stay as plain handles. Recursion uses a `"Class::Buffer"` visited set to break cycles.
 
 ---
 
@@ -23,12 +24,12 @@
 
 | File | Change |
 |------|--------|
-| `src/main/kotlin/com/pyoif/tatara/DtoParser.kt` | Add 2 fields to `DtoProperty`. Extend `annotationRegex`. Add `parseTempTableParam` helper. Wire new fields through the annotation handler. |
-| `src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt` | In `addDtoToSchemas`, swap hardcoded `dtoClass` and `tt<PropName>` for the new prop fields. Add `logger.warn` on miss with explicit class. |
-| `src/test/kotlin/com/pyoif/tatara/DtoParserTest.kt` | 6 new tests for parameter parsing. |
-| `src/test/kotlin/com/pyoif/tatara/GenerateOpenApiTaskTest.kt` | 5 new tests for cross-class / explicit-buffer OpenAPI emission. |
+| `src/main/kotlin/com/pyoif/tatara/DtoParser.kt` | Task 1: add 2 fields to `DtoProperty`, extend `annotationRegex`, add `parseTempTableParam` helper, wire new fields. Task 3: refactor `parseAllInlineTempTables` to per-line processing with annotation handling for FIELD lines. |
+| `src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt` | Task 2: in `addDtoToSchemas`, swap hardcoded `dtoClass` / `tt<PropName>` for the new prop fields; add `logger.warn` on miss. Task 4: `buildTempTableObjectSchema` gains `pkgRoot` parameter + recursive nested-TT resolution with visited set. |
+| `src/test/kotlin/com/pyoif/tatara/DtoParserTest.kt` | Task 1: 6 new tests. Task 3: 5 new tests for nested TT field parsing. |
+| `src/test/kotlin/com/pyoif/tatara/GenerateOpenApiTaskTest.kt` | Task 2: 5 new tests. Task 4: 4 new tests for nested TT OpenAPI emission. |
 
-`GenerateRouteTask.kt`, `GenerateOpenApiTaskTest.kt`'s existing tests, and all other files are untouched.
+`GenerateRouteTask.kt`, existing tests, and all other files are untouched.
 
 ---
 
@@ -560,4 +561,487 @@ Expected: all tests PASS (including existing `DtoParserTest`, existing `Generate
 ```bash
 git add src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt src/test/kotlin/com/pyoif/tatara/GenerateOpenApiTaskTest.kt
 git commit -m "feat(openapi): bind @Array/@Object to cross-class or explicit buffer via \"Class[:Buffer]\" parameter"
+```
+
+---
+
+### Task 3: Parser changes — annotation handling for FIELD lines in temp-tables
+
+**Files:**
+- Modify: `src/main/kotlin/com/pyoif/tatara/DtoParser.kt:134-158` (the body of `parseAllInlineTempTables`)
+- Test: `src/test/kotlin/com/pyoif/tatara/DtoParserTest.kt` (add 5 new tests at end of class)
+
+**Interfaces:**
+- Consumes: existing `parseTempTableParam` helper (from Task 1), existing `annotationRegex` (extended in Task 1), existing `fieldDefRegex`.
+- Produces: a `DtoProperty` per FIELD where the `isTempTable` / `tempTableKind` / `tempTableClass` / `tempTableName` fields are populated when (a) the line has a `// @Array` / `// @Object` / `// @TempTable` annotation AND (b) the field type is `HANDLE`. Otherwise `isTempTable=false`.
+
+- [ ] **Step 1: Add the 5 failing tests to `DtoParserTest.kt`**
+
+Append the following inside `class DtoParserTest` (after the last existing `@Test`):
+
+```kotlin
+    @Test
+    fun `parses nested @Array on FIELD line with class only`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Nested")
+                        FIELD lines   AS HANDLE
+                        FIELD sku     AS CHARACTER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val linesField = tt.fields.properties.find { it.name == "lines" }!!
+        assertTrue(linesField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, linesField.tempTableKind)
+        assertEquals("com.example.Nested", linesField.tempTableClass)
+        assertNull(linesField.tempTableName)
+    }
+
+    @Test
+    fun `parses nested @Object on FIELD line with class and buffer name`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        // @Object("com.example.Nested:ttHeader")
+                        FIELD summary AS HANDLE.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val summaryField = tt.fields.properties.find { it.name == "summary" }!!
+        assertTrue(summaryField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.OBJECT, summaryField.tempTableKind)
+        assertEquals("com.example.Nested", summaryField.tempTableClass)
+        assertEquals("ttHeader", summaryField.tempTableName)
+    }
+
+    @Test
+    fun `parses bare @Array on FIELD line using convention`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        // @Array
+                        FIELD lines   AS HANDLE.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val linesField = tt.fields.properties.find { it.name == "lines" }!!
+        assertTrue(linesField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.ARRAY, linesField.tempTableKind)
+        assertNull(linesField.tempTableClass)
+        assertEquals("ttLines", linesField.tempTableName)
+    }
+
+    @Test
+    fun `HANDLE field without annotation is not a nested temp-table`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD raw   AS HANDLE
+                        FIELD orderId AS INTEGER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val rawField = tt.fields.properties.find { it.name == "raw" }!!
+        assertFalse(rawField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.NONE, rawField.tempTableKind)
+    }
+
+    @Test
+    fun `non-HANDLE field with @Array annotation is still not a temp-table`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        // @Array
+                        FIELD label AS CHARACTER.
+            """.trimIndent())
+        }
+        val tt = DtoParser.parseInlineTempTable("com.example.Order", src)!!
+        val labelField = tt.fields.properties.find { it.name == "label" }!!
+        assertFalse(labelField.isTempTable)
+        assertEquals(DtoParser.TempTableKind.NONE, labelField.tempTableKind)
+    }
+```
+
+- [ ] **Step 2: Run the 5 new tests to verify they fail**
+
+Run: `./gradlew test --tests "com.pyoif.tatara.DtoParserTest.parses nested @Array on FIELD line with class only" --tests "com.pyoif.tatara.DtoParserTest.parses nested @Object on FIELD line with class and buffer name" --tests "com.pyoif.tatara.DtoParserTest.parses bare @Array on FIELD line using convention" --tests "com.pyoif.tatara.DtoParserTest.HANDLE field without annotation is not a nested temp-table" --tests "com.pyoif.tatara.DtoParserTest.non-HANDLE field with @Array annotation is still not a temp-table"`
+Expected: the 3 nested-annotation tests FAIL (no fields are detected as temp-table fields); the 2 negative tests PASS (current behavior is already correct for these cases).
+
+- [ ] **Step 3: Refactor `parseAllInlineTempTables` to per-line processing**
+
+In `src/main/kotlin/com/pyoif/tatara/DtoParser.kt`, replace the `parseAllInlineTempTables` function (lines 134-158) with:
+
+```kotlin
+    private fun parseAllInlineTempTables(
+        dtoClassName: String,
+        srcRoot: File
+    ): List<InlineTempTable> {
+        val file = resolveFile(dtoClassName, srcRoot) ?: return emptyList()
+        val content = file.readText()
+        val results = mutableListOf<InlineTempTable>()
+        ttDefRegex.findAll(content).forEach { ttMatch ->
+            val bufferName = ttMatch.groupValues[1]
+            val body = ttMatch.groupValues[2]
+            val properties = mutableListOf<DtoProperty>()
+
+            body.lines().forEach { line ->
+                val trimmed = line.trim()
+                var isTempTable = false
+                var tempTableKind = TempTableKind.NONE
+                var currentTempTableClass: String? = null
+                var currentTempTableName: String? = null
+
+                annotationRegex.findAll(trimmed).forEach { m ->
+                    when (m.groupValues[1].lowercase()) {
+                        "object" -> {
+                            isTempTable = true
+                            tempTableKind = TempTableKind.OBJECT
+                            val (cls, name) = parseTempTableParam(m.groupValues[2])
+                            currentTempTableClass = cls
+                            currentTempTableName = name
+                        }
+                        "array" -> {
+                            isTempTable = true
+                            tempTableKind = TempTableKind.ARRAY
+                            val (cls, name) = parseTempTableParam(m.groupValues[2])
+                            currentTempTableClass = cls
+                            currentTempTableName = name
+                        }
+                        "temptable" -> {
+                            isTempTable = true
+                            tempTableKind = TempTableKind.ARRAY
+                            // bare alias — drop any parameter
+                        }
+                    }
+                }
+
+                fieldDefRegex.find(trimmed)?.let { m ->
+                    val name = m.groupValues[1]
+                    val ablType = m.groupValues[2]
+                    val isExtent = m.groups[3]?.value != null
+                    val extentSize = m.groups[3]?.value?.trim()?.split(Regex("\\s+"))?.lastOrNull()?.toIntOrNull()
+
+                    val promoteToTempTable = isTempTable && ablType.uppercase() == "HANDLE"
+                    val effectiveClass = if (promoteToTempTable) (currentTempTableClass ?: dtoClassName) else null
+                    val effectiveName = if (promoteToTempTable) {
+                        currentTempTableName ?: ("tt" + name.replaceFirstChar { it.uppercase() })
+                    } else null
+
+                    properties.add(DtoProperty(
+                        name = name,
+                        ablType = ablType,
+                        isExtent = isExtent,
+                        extentSize = extentSize,
+                        isTempTable = promoteToTempTable,
+                        tempTableKind = if (promoteToTempTable) tempTableKind else TempTableKind.NONE,
+                        tempTableClass = effectiveClass,
+                        tempTableName = effectiveName
+                    ))
+                }
+            }
+
+            results.add(InlineTempTable(bufferName, DtoInfo(properties)))
+        }
+        return results
+    }
+```
+
+- [ ] **Step 4: Run the 5 new tests to verify they pass**
+
+Run: `./gradlew test --tests "com.pyoif.tatara.DtoParserTest.parses nested @Array on FIELD line with class only" --tests "com.pyoif.tatara.DtoParserTest.parses nested @Object on FIELD line with class and buffer name" --tests "com.pyoif.tatara.DtoParserTest.parses bare @Array on FIELD line using convention" --tests "com.pyoif.tatara.DtoParserTest.HANDLE field without annotation is not a nested temp-table" --tests "com.pyoif.tatara.DtoParserTest.non-HANDLE field with @Array annotation is still not a temp-table"`
+Expected: all 5 PASS.
+
+- [ ] **Step 5: Run the full test suite to confirm no regressions**
+
+Run: `./gradlew test --tests "com.pyoif.tatara.DtoParserTest"`
+Expected: all tests PASS (existing + 6 from Task 1 + 5 new = 20 total in this file).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/main/kotlin/com/pyoif/tatara/DtoParser.kt src/test/kotlin/com/pyoif/tatara/DtoParserTest.kt
+git commit -m "feat(dto): parse @Array/@Object annotations on FIELD lines for nested temp-tables"
+```
+
+---
+
+### Task 4: OpenAPI task — recursive nested-TT schema emission
+
+**Files:**
+- Modify: `src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt:227-240` (`buildTempTableObjectSchema`), plus its 2 call sites in `addDtoToSchemas` (lines ~175, ~194)
+- Test: `src/test/kotlin/com/pyoif/tatara/GenerateOpenApiTaskTest.kt` (add 4 new tests at end of class)
+
+**Interfaces:**
+- Consumes: `DtoProperty.isTempTable` / `tempTableKind` / `tempTableClass` / `tempTableName` (set per-field by Task 3).
+- Produces: `buildTempTableObjectSchema(fields: DtoParser.DtoInfo, pkgRoot: File): JsonObject` that recursively resolves nested HANDLE fields annotated as temp-tables. Cycles emit generic schema. Misses log a warning and emit generic schema.
+
+- [ ] **Step 1: Add the 4 failing tests to `GenerateOpenApiTaskTest.kt`**
+
+Append the following inside `class GenerateOpenApiTaskTest` (after the last existing `@Test`):
+
+```kotlin
+    @Test
+    fun `emits typed nested array schema from inline temp-table fields`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Nested:ttLines")
+                        FIELD lines   AS HANDLE.
+            """.trimIndent())
+        }
+        File(src, "com/example/Nested.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Nested:
+                    DEFINE TEMP-TABLE ttLines NO-UNDO
+                        FIELD lineNo  AS INTEGER
+                        FIELD text    AS CHARACTER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"lineNo\""), "should include nested lineNo. Got:\n$swagger")
+        assertTrue(swagger.contains("\"text\""), "should include nested text. Got:\n$swagger")
+    }
+
+    @Test
+    fun `nested @Array falls back to generic when target class missing`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Missing:ttX")
+                        FIELD lines AS HANDLE.
+            """.trimIndent())
+        }
+        // No Missing.cls
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "outer orderId should be present. Got:\n$swagger")
+        assertTrue(swagger.contains("\"additionalProperties\": true"), "should include generic fallback. Got:\n$swagger")
+    }
+
+    @Test
+    fun `nested temp-table cycle emits generic schema and does not infinite loop`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        // @Array("com.example.Order:ttItems")
+                        FIELD children AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "outer orderId should still be present. Got:\n$swagger")
+    }
+
+    @Test
+    fun `HANDLE field without annotation stays as generic handle`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        FIELD rawHandle AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "orderId should be present. Got:\n$swagger")
+    }
+```
+
+- [ ] **Step 2: Run the 4 new tests to verify they fail**
+
+Run: `./gradlew test --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.emits typed nested array schema from inline temp-table fields" --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.nested @Array falls back to generic when target class missing" --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.nested temp-table cycle emits generic schema and does not infinite loop" --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.HANDLE field without annotation stays as generic handle"`
+Expected: the typed-nested test FAILS (nested fields not emitted); the cycle test either hangs/OOMs or FAILS (no recursion yet); the missing-target and unannotated-handle tests PASS (current behavior is correct for these).
+
+- [ ] **Step 3: Update `buildTempTableObjectSchema` to recursively resolve nested temp-tables**
+
+In `src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt`, replace the helper (lines 227-240) with:
+
+```kotlin
+    private fun buildTempTableObjectSchema(
+        fields: DtoParser.DtoInfo,
+        pkgRoot: File,
+        visited: MutableSet<String> = mutableSetOf()
+    ): JsonObject {
+        val innerProps = JsonObject()
+        fields.properties.forEach { p ->
+            if (p.isTempTable) {
+                val srcClass = p.tempTableClass ?: return@forEach  // unreachable; parser always sets
+                val bufName = p.tempTableName ?: ("tt" + p.name.replaceFirstChar { it.uppercase() })
+                val key = "$srcClass::$bufName"
+                if (key in visited) {
+                    logger.warn("Cycle detected for nested temp-table '$key' (prop '${p.name}'); emitting generic schema.")
+                    innerProps.add(p.name, JsonObject().apply {
+                        addProperty("type", "object")
+                        addProperty("additionalProperties", true)
+                    })
+                } else {
+                    val nestedTt = DtoParser.parseInlineTempTableByName(srcClass, pkgRoot, bufName)
+                    if (nestedTt == null) {
+                        logger.warn("Nested temp-table '$bufName' not found in class '$srcClass' (prop '${p.name}'); emitting generic schema.")
+                        innerProps.add(p.name, JsonObject().apply {
+                            addProperty("type", "object")
+                            addProperty("additionalProperties", true)
+                        })
+                    } else {
+                        visited.add(key)
+                        val typedObj = buildTempTableObjectSchema(nestedTt.fields, pkgRoot, visited)
+                        visited.remove(key)
+                        when (p.tempTableKind) {
+                            DtoParser.TempTableKind.ARRAY -> innerProps.add(p.name, JsonObject().apply {
+                                addProperty("type", "array")
+                                add("items", typedObj)
+                            })
+                            DtoParser.TempTableKind.OBJECT -> innerProps.add(p.name, typedObj)
+                            DtoParser.TempTableKind.NONE -> { /* unreachable */ }
+                        }
+                    }
+                }
+            } else {
+                innerProps.add(p.name, mapAblType(p.ablType, if (p.isExtent) "EXTENT" else null, JsonObject()))
+            }
+        }
+        return JsonObject().apply {
+            addProperty("type", "object")
+            add("properties", innerProps)
+        }
+    }
+```
+
+- [ ] **Step 4: Update the 2 call sites in `addDtoToSchemas` to pass `pkgRoot`**
+
+In `src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt`, find both `buildTempTableObjectSchema(inlineTt.fields)` calls (in the `ARRAY` and `OBJECT` branches of the `isTempTable` block in `addDtoToSchemas`, around lines 175 and 194). Replace each with:
+
+```kotlin
+val typedObj = buildTempTableObjectSchema(inlineTt.fields, pkgRoot)
+```
+
+- [ ] **Step 5: Run the 4 new tests to verify they pass**
+
+Run: `./gradlew test --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.emits typed nested array schema from inline temp-table fields" --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.nested @Array falls back to generic when target class missing" --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.nested temp-table cycle emits generic schema and does not infinite loop" --tests "com.pyoif.tatara.GenerateOpenApiTaskTest.HANDLE field without annotation stays as generic handle"`
+Expected: all 4 PASS.
+
+- [ ] **Step 6: Run the full test suite to confirm no regressions**
+
+Run: `./gradlew test`
+Expected: all tests PASS (existing + 6 from Task 1 + 5 from Task 2 + 5 from Task 3 + 4 from Task 4 = 20 new tests added; nothing regresses).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt
+git commit -m "feat(openapi): recursively resolve nested temp-tables in field schemas"
 ```

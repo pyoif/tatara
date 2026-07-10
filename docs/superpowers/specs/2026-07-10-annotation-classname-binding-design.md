@@ -131,8 +131,8 @@ When `tempTableClass != null` and the lookup misses, log a warning and fall back
 - Shim emission changes (not needed; the HANDLE walks itself at ABL runtime).
 - Parameter syntax on `@TempTable` (kept as bare alias).
 - Multi-buffer resolution from one annotation (one prop, one TT).
-- Nested temp-tables (still out of scope per prior specs).
 - Cross-package or fully-qualified path conventions beyond what `resolveFile` already supports (`x.y.z` → `x/y/z.cls`).
+- **Unannotated HANDLE fields silently treated as nested TTs** — see "Nested temp-tables" below.
 
 ## Test Plan
 
@@ -169,3 +169,90 @@ When `tempTableClass != null` and the lookup misses, log a warning and fall back
 ## Commit
 
 `feat(openapi): bind @Array/@Object to cross-class or explicit buffer via "Class[:Buffer]" parameter`
+
+---
+
+# Nested Temp-Tables
+
+**Scope:** OpenAPI schema generation only (consistent with parent feature). ABL's `JsonObject:Add(handle)` / `JsonArray:Add(handle)` do not recursively walk nested TTs at runtime, so the shim is unchanged.
+
+## Goal
+
+Extend the cross-class / explicit-buffer binding to `FIELD` declarations inside `DEFINE TEMP-TABLE` blocks. A temp-table field typed `AS HANDLE` can itself be a nested temp-table; the user expresses this with the same `// @Array(...)` / `// @Object(...)` annotation syntax on the FIELD line.
+
+## Behavior
+
+A FIELD inside a `DEFINE TEMP-TABLE` block follows these rules:
+
+| FIELD annotation | Type | Behavior |
+|---|---|---|
+| `// @Array` / `// @Object` (bare) | `AS HANDLE` | nested TT, current class + `tt<FieldName>` convention |
+| `// @Array("X")` / `// @Object("X")` | `AS HANDLE` | nested TT, X class + `tt<FieldName>` convention |
+| `// @Array("X:Y")` / `// @Object("X:Y")` | `AS HANDLE` | nested TT, X class + Y buffer |
+| `// @Array(":Y")` / `// @Object(":Y")` | `AS HANDLE` | nested TT, current class + Y buffer |
+| `// @TempTable` (bare alias) | `AS HANDLE` | nested TT, current class + `tt<FieldName>` convention |
+| (no annotation) | `AS HANDLE` | **plain handle, generic schema** (no change from prior behavior) |
+| any | non-HANDLE | type-mapped by `mapAblType` (no change) |
+
+**Critical:** an unannotated HANDLE field is **not** silently treated as a nested temp-table. A HANDLE can point to anything in ABL (a socket, a dataset, a procedure handle, etc.); promoting to a nested TT requires an explicit opt-in. This is the change from the initial brainstorming pass.
+
+## Parser Changes
+
+`DtoParser.parseAllInlineTempTables` is restructured to process the TT body line by line (instead of `findAll` over the body string). For each line:
+
+1. Run `annotationRegex` to find any `@Array` / `@Object` / `@TempTable` annotation. Capture `tempTableClass` and `tempTableName` via the existing `parseTempTableParam` helper (the same one Task 1 introduced).
+2. Run `fieldDefRegex` to find the field declaration.
+3. Build a `DtoProperty` for the field. If the line has one of the recognized annotations AND the field type is `HANDLE`, set `isTempTable=true` and the class/name fields. Otherwise leave `isTempTable=false` (plain handle or typed scalar field).
+
+`parseInlineTempTableByName` and the rest of the public surface stay unchanged. The returned `InlineTempTable.fields` carries the per-field `isTempTable` / `tempTableKind` / `tempTableClass` / `tempTableName` metadata, and `buildTempTableObjectSchema` in `GenerateOpenApiTask` walks it recursively.
+
+## OpenAPI Task Changes
+
+`buildTempTableObjectSchema(fields)` gains recursion. New signature:
+
+```kotlin
+private fun buildTempTableObjectSchema(
+    fields: DtoParser.DtoInfo,
+    pkgRoot: File
+): JsonObject
+```
+
+Internally, the helper uses a `MutableSet<String>` of `"ClassName::BufferName"` keys to break cycles. The set is threaded through the recursion as a parameter (default empty when called from the top). For each field:
+
+- If `field.isTempTable`: resolve via `DtoParser.parseInlineTempTableByName(srcClass, pkgRoot, bufName)`. On hit, recurse with `visited` augmented. On miss, log a warning and emit generic `{type: object, additionalProperties: true}` for that field. On cycle (key already in `visited`), log a warning and emit generic.
+- Else: emit `mapAblType(field.ablType, extent?, JsonObject())` (unchanged).
+
+The outer shape (`type: array` with `items: <typedObj>` for `@Array`, or `<typedObj>` for `@Object`) is unchanged from Task 2.
+
+The two call sites in `addDtoToSchemas` (the `@Array` branch and the `@Object` branch) pass `pkgRoot` through. No other changes to `addDtoToSchemas` or any other method.
+
+## Out of Scope (Nested)
+
+- Shim emission changes for nested TTs. ABL's runtime does not walk nested TTs via `JsonObject:Add(handle)`. Users wanting nested-TT data in JSON must flatten via temp-table relationships at the controller level (same constraint as before).
+- Unannotated HANDLE fields promoted to nested TTs (explicit annotation required).
+
+## Test Plan (Nested)
+
+### `DtoParserTest.kt` (5 new tests)
+
+1. `parses nested @Array on FIELD line with class only` — explicit `"Class"` parameter on a FIELD line; asserts `field.isTempTable=true`, `tempTableKind=ARRAY`, `tempTableClass="X"`, `tempTableName=null`.
+2. `parses nested @Object on FIELD line with class and buffer name` — explicit `"X:Y"` parameter; asserts OBJECT kind and both fields populated.
+3. `parses bare @Array on FIELD line using convention` — no parens; asserts `tempTableClass=null`, `tempTableName="tt<FieldName>"`.
+4. `HANDLE field without annotation is not a nested temp-table` — asserts `isTempTable=false`.
+5. `non-HANDLE field with @Array annotation is still not a temp-table` — `AS CHARACTER` with `// @Array`; asserts `isTempTable=false` (only HANDLE-typed fields qualify).
+
+### `GenerateOpenApiTaskTest.kt` (4 new tests)
+
+6. `emits typed nested array schema from inline temp-table fields` — outer `// @Array` + inner `// @Array("X:ttY")` resolves and emits `lineNo`/`text` fields from the nested TT.
+7. `nested @Array falls back to generic when target class missing` — outer TT is typed; nested field falls back to generic.
+8. `nested temp-table cycle emits generic schema and does not infinite loop` — `ttItems.children` annotated to point back to `ttItems`; build terminates and `orderId` still emitted.
+9. `HANDLE field without annotation stays as generic handle` — regression: unannotated HANDLE field does not promote to nested TT; build succeeds and `orderId` is present.
+
+## Files Changed (Nested)
+
+| File | Change |
+|------|--------|
+| `src/main/kotlin/com/pyoif/tatara/DtoParser.kt` | Refactor `parseAllInlineTempTables` to per-line processing; add annotation handling for FIELD lines. |
+| `src/main/kotlin/com/pyoif/tatara/GenerateOpenApiTask.kt` | `buildTempTableObjectSchema` gains `pkgRoot` parameter + recursive nested-TT resolution with visited set. |
+| `src/test/kotlin/com/pyoif/tatara/DtoParserTest.kt` | 5 new tests. |
+| `src/test/kotlin/com/pyoif/tatara/GenerateOpenApiTaskTest.kt` | 4 new tests. |
