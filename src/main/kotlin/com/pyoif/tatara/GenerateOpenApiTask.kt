@@ -50,6 +50,7 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         "DECIMAL"   to mapOf<String,Any>("type" to "number"),
         "LOGICAL"   to mapOf<String,Any>("type" to "boolean"),
         "LONGCHAR"  to mapOf("type" to "string"),
+        "DATE"      to mapOf("type" to "string", "format" to "date"),
         "DATETIME"  to mapOf("type" to "string", "format" to "date-time"),
         "DATETIME-TZ" to mapOf("type" to "string", "format" to "date-time"),
         "INT64"     to mapOf<String,Any>("type" to "integer", "format" to "int64")
@@ -161,8 +162,13 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val requiredArr = JsonArray()
         dto.properties.forEach { p ->
             if (p.isTempTable) {
-                val expectedTtName = "tt" + p.name.replaceFirstChar { it.uppercase() }
-                val inlineTt = DtoParser.parseInlineTempTableByName(dtoClass, pkgRoot, expectedTtName)
+                val srcClass = p.tempTableClass ?: dtoClass
+                val bufName = p.tempTableName ?: ("tt" + p.name.replaceFirstChar { it.uppercase() })
+                val inlineTt = DtoParser.parseInlineTempTableByName(srcClass, pkgRoot, bufName)
+                if (inlineTt == null && p.tempTableClass != null) {
+                    logger.warn("Temp-table '$bufName' not found in class '$srcClass' " +
+                                "(prop '${p.name}' on '$dtoClass'); falling back to generic schema.")
+                }
                 val desc = when (p.tempTableKind) {
                     DtoParser.TempTableKind.ARRAY -> "ABL temp-table; field-level schema from inline DEFINE TEMP-TABLE"
                     DtoParser.TempTableKind.OBJECT -> "ABL temp-table (single-row); field-level schema from inline DEFINE TEMP-TABLE"

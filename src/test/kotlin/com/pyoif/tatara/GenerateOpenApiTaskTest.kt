@@ -377,4 +377,202 @@ class GenerateOpenApiTaskTest {
         assertFalse(swagger.contains("\"x\""),
             "should not leak unrelated TT fields. Got:\n$swagger")
     }
+
+    @Test
+    fun `cross-class @Array resolves TT from target class file`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array("com.example.OrderHolder")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        File(src, "com/example/OrderHolder.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderHolder:
+                    DEFINE TEMP-TABLE ttItems NO-UNDO
+                        FIELD orderId AS INTEGER
+                        FIELD sku     AS CHARACTER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "should include orderId field from target TT. Got:\n$swagger")
+        assertTrue(swagger.contains("\"sku\""), "should include sku field from target TT. Got:\n$swagger")
+        assertTrue(swagger.contains("\"type\": \"array\""), "should emit array type. Got:\n$swagger")
+    }
+
+    @Test
+    fun `cross-class @Array with explicit buffer name picks that buffer`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array("com.example.OrderHolder:ttOrders")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+        File(src, "com/example/OrderHolder.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderHolder:
+                    DEFINE TEMP-TABLE ttOther NO-UNDO
+                        FIELD ignored AS CHARACTER.
+                    DEFINE TEMP-TABLE ttOrders NO-UNDO
+                        FIELD orderId AS INTEGER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "should include orderId from ttOrders. Got:\n$swagger")
+        assertFalse(swagger.contains("\"ignored\""), "should not include 'ignored' field from ttOther. Got:\n$swagger")
+    }
+
+    @Test
+    fun `cross-class @Array falls back to generic schema when target class missing`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array("com.example.Missing")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"type\": \"array\""), "should still emit array type on fallback. Got:\n$swagger")
+        assertTrue(swagger.contains("\"additionalProperties\": true"), "should emit generic items on fallback. Got:\n$swagger")
+        assertTrue(swagger.contains("ABL temp-table"), "should keep description on fallback. Got:\n$swagger")
+    }
+
+    @Test
+    fun `current-class @Array with leading-colon explicit buffer`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array(":ttCustom")
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttOther  NO-UNDO FIELD skipped AS CHARACTER.
+                    DEFINE TEMP-TABLE ttCustom NO-UNDO FIELD a AS INTEGER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"a\""), "should include 'a' from ttCustom. Got:\n$swagger")
+        assertFalse(swagger.contains("\"skipped\""), "should not include 'skipped' from ttOther. Got:\n$swagger")
+    }
+
+    @Test
+    fun `backward-compat @Array without parameter uses tt-PropName convention`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        val handlers = tmp.resolve("handlers").toFile()
+        val out = tmp.resolve("out").toFile()
+
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC com.example.Order GetOrder():
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                        RETURN NEW com.example.Order().
+                    END METHOD.
+            """.trimIndent())
+        }
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Array
+                    DEFINE PUBLIC PROPERTY items AS HANDLE.
+                    DEFINE TEMP-TABLE ttItems NO-UNDO FIELD orderId AS INTEGER.
+            """.trimIndent())
+        }
+
+        writeHandlers(handlers, "svc", "com.example.OrderController", "/svc/orders")
+        runGenerateOpenApi(src, handlers, out)
+
+        val swagger = out.resolve("swagger.json").readText()
+        assertTrue(swagger.contains("\"orderId\""), "should resolve ttItems by convention. Got:\n$swagger")
+    }
 }
