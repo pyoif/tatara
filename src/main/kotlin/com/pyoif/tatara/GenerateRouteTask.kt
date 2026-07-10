@@ -312,15 +312,9 @@ abstract class GenerateRoutesTask : DefaultTask() {
                     methodHandlersBlock.append("\r\n")
 
                     queryProps.forEach { prop ->
-                        val keyLen = prop.name.length + 1 // length of "<name>="
-                        methodHandlersBlock.append("\t\tDEFINE VARIABLE iStart_${prop.name} AS INTEGER NO-UNDO.\r\n")
-                        methodHandlersBlock.append("\t\tDEFINE VARIABLE iAmp_${prop.name} AS INTEGER NO-UNDO.\r\n")
                         methodHandlersBlock.append("\t\tDEFINE VARIABLE cVal_${prop.name} AS CHARACTER NO-UNDO.\r\n")
-                        methodHandlersBlock.append("\t\tiStart_${prop.name} = INDEX(cQuery, \"${prop.name}=\") + $keyLen.\r\n")
-                        methodHandlersBlock.append("\t\tIF iStart_${prop.name} > $keyLen THEN DO:\r\n")
-                        methodHandlersBlock.append("\t\t\tiAmp_${prop.name} = INDEX(cQuery, \"&\", iStart_${prop.name}).\r\n")
-                        methodHandlersBlock.append("\t\t\tIF iAmp_${prop.name} = 0 THEN iAmp_${prop.name} = LENGTH(cQuery) + 1.\r\n")
-                        methodHandlersBlock.append("\t\t\tcVal_${prop.name} = OpenEdge.Net.URI:Decode(SUBSTRING(cQuery, iStart_${prop.name}, iAmp_${prop.name} - iStart_${prop.name})).\r\n")
+                        methodHandlersBlock.append("\t\tcVal_${prop.name} = Tatara.Api.QueryHelper:GetQueryValue(cQuery, \"${prop.name}\").\r\n")
+                        methodHandlersBlock.append("\t\tIF cVal_${prop.name} <> ? THEN\r\n")
                         when (prop.ablType.uppercase()) {
                             "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = INTEGER(cVal_${prop.name}).\r\n")
                             "DECIMAL" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = DECIMAL(cVal_${prop.name}).\r\n")
@@ -328,7 +322,6 @@ abstract class GenerateRoutesTask : DefaultTask() {
                             "DATETIME", "DATETIME-TZ" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = DATETIME(cVal_${prop.name}).\r\n")
                             else -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = cVal_${prop.name}.\r\n")
                         }
-                        methodHandlersBlock.append("\t\tEND.\r\n")
                         if (prop.isRequired) {
                             methodHandlersBlock.append("\t\tELSE DO:\r\n")
                             methodHandlersBlock.append("\t\t\tTatara.Api.ResponseWriter:WriteError(oResponse, 400, \"Missing required query parameter: ${prop.name}\").\r\n")

@@ -379,27 +379,24 @@ class GenerateRouteTaskEmitTest {
             )
         )
 
-        // No intermediate JsonObject
+        // No intermediate JsonObject or per-field INDEX/SUBSTRING arithmetic
         assertFalse(shim.contains("oQueryParams"),
             "shim should not declare oQueryParams JsonObject. SHIM:\n$shim")
-        // Per-field INDEX-based extraction
-        assertTrue(shim.contains("""iStart_name = INDEX(cQuery, "name=")"""),
-            "shim should compute iStart_name via INDEX. SHIM:\n$shim")
-        assertTrue(shim.contains("""iStart_count = INDEX(cQuery, "count=")"""),
-            "shim should compute iStart_count via INDEX. SHIM:\n$shim")
-        // Per-field SUBSTRING with & delimiter
-        assertTrue(shim.contains("""iAmp_name = INDEX(cQuery, "&", iStart_name)"""),
-            "shim should look for next & after iStart_name. SHIM:\n$shim")
-        assertTrue(shim.contains("""SUBSTRING(cQuery, iStart_name, iAmp_name - iStart_name)"""),
-            "shim should SUBSTRING between = and &. SHIM:\n$shim")
+        assertFalse(shim.contains("iStart_name") || shim.contains("iAmp_name"),
+            "shim should not contain per-field INDEX/SUBSTRING arithmetic. SHIM:\n$shim")
+        // Shared helper call
+        assertTrue(shim.contains("""Tatara.Api.QueryHelper:GetQueryValue(cQuery, "name")"""),
+            "shim should call QueryHelper for name. SHIM:\n$shim")
+        assertTrue(shim.contains("""Tatara.Api.QueryHelper:GetQueryValue(cQuery, "count")"""),
+            "shim should call QueryHelper for count. SHIM:\n$shim")
+        // <> ? check
+        assertTrue(shim.contains("IF cVal_name <> ? THEN"),
+            "shim should guard with <> ?. SHIM:\n$shim")
         // Type casts
         assertTrue(shim.contains("oReq:name = cVal_name."),
             "shim should assign CHARACTER directly. SHIM:\n$shim")
         assertTrue(shim.contains("oReq:count = INTEGER(cVal_count)."),
             "shim should cast INTEGER via INTEGER(). SHIM:\n$shim")
-        // URI:Decode preserved
-        assertTrue(shim.contains("OpenEdge.Net.URI:Decode(SUBSTRING"),
-            "shim should URL-decode the extracted value. SHIM:\n$shim")
     }
 
     @Test
