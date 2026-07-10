@@ -307,43 +307,31 @@ abstract class GenerateRoutesTask : DefaultTask() {
 
                 // Query mappings
                 if (queryProps.isNotEmpty()) {
-                    methodHandlersBlock.append("\t\tDEFINE VARIABLE oQueryParams AS Progress.Json.ObjectModel.JsonObject NO-UNDO.\r\n")
                     methodHandlersBlock.append("\t\tDEFINE VARIABLE cQuery AS CHARACTER NO-UNDO.\r\n")
-                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cPair AS CHARACTER NO-UNDO.\r\n")
-                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cKey AS CHARACTER NO-UNDO.\r\n")
-                    methodHandlersBlock.append("\t\tDEFINE VARIABLE cValue AS CHARACTER NO-UNDO.\r\n")
-                    methodHandlersBlock.append("\t\tDEFINE VARIABLE iPos AS INTEGER NO-UNDO.\r\n")
-                    methodHandlersBlock.append("\t\tDEFINE VARIABLE ix AS INTEGER NO-UNDO.\r\n")
-                    methodHandlersBlock.append("\t\toQueryParams = NEW Progress.Json.ObjectModel.JsonObject().\r\n")
                     methodHandlersBlock.append("\t\tcQuery = poRequest:URI:QueryString.\r\n")
-                    methodHandlersBlock.append("\t\tIF cQuery <> \"\" AND cQuery <> ? THEN DO:\r\n")
-                    methodHandlersBlock.append("\t\t\tIF cQuery BEGINS \"?\" THEN cQuery = SUBSTRING(cQuery, 2).\r\n")
-                    methodHandlersBlock.append("\t\t\tDO ix = 1 TO NUM-ENTRIES(cQuery, '&'):\r\n")
-                    methodHandlersBlock.append("\t\t\t\tcPair = ENTRY(ix, cQuery, '&').\r\n")
-                    methodHandlersBlock.append("\t\t\t\tiPos = INDEX(cPair, \"=\").\r\n")
-                    methodHandlersBlock.append("\t\t\t\tIF iPos > 0 THEN DO:\r\n")
-                    methodHandlersBlock.append("\t\t\t\t\tcKey = TRIM(SUBSTRING(cPair, 1, iPos - 1)).\r\n")
-                    methodHandlersBlock.append("\t\t\t\t\tcValue = TRIM(SUBSTRING(cPair, iPos + 1)).\r\n")
-                    methodHandlersBlock.append("\t\t\t\t\tcValue = OpenEdge.Net.URI:Decode(cValue).\r\n")
-                    methodHandlersBlock.append("\t\t\t\t\toQueryParams:Add(cKey, cValue).\r\n")
-                    methodHandlersBlock.append("\t\t\t\tEND.\r\n")
-                    methodHandlersBlock.append("\t\t\t\tELSE oQueryParams:Add(TRIM(cPair), \"\").\r\n")
-                    methodHandlersBlock.append("\t\t\tEND.\r\n")
-                    methodHandlersBlock.append("\t\tEND.\r\n")
                     methodHandlersBlock.append("\r\n")
-                    
+
                     queryProps.forEach { prop ->
-                        methodHandlersBlock.append("\t\tIF oQueryParams:Has(\"${prop.name}\") AND NOT oQueryParams:IsNull(\"${prop.name}\") THEN DO:\r\n")
+                        val keyLen = prop.name.length + 1 // length of "<name>="
+                        methodHandlersBlock.append("\t\tDEFINE VARIABLE iStart_${prop.name} AS INTEGER NO-UNDO.\r\n")
+                        methodHandlersBlock.append("\t\tDEFINE VARIABLE iAmp_${prop.name} AS INTEGER NO-UNDO.\r\n")
+                        methodHandlersBlock.append("\t\tDEFINE VARIABLE cVal_${prop.name} AS CHARACTER NO-UNDO.\r\n")
+                        methodHandlersBlock.append("\t\tiStart_${prop.name} = INDEX(cQuery, \"${prop.name}=\") + $keyLen.\r\n")
+                        methodHandlersBlock.append("\t\tIF iStart_${prop.name} > $keyLen THEN DO:\r\n")
+                        methodHandlersBlock.append("\t\t\tiAmp_${prop.name} = INDEX(cQuery, \"&\", iStart_${prop.name}).\r\n")
+                        methodHandlersBlock.append("\t\t\tIF iAmp_${prop.name} = 0 THEN iAmp_${prop.name} = LENGTH(cQuery) + 1.\r\n")
+                        methodHandlersBlock.append("\t\t\tcVal_${prop.name} = OpenEdge.Net.URI:Decode(SUBSTRING(cQuery, iStart_${prop.name}, iAmp_${prop.name} - iStart_${prop.name})).\r\n")
                         when (prop.ablType.uppercase()) {
-                            "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetInteger(\"${prop.name}\").\r\n")
-                            "DECIMAL" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetDecimal(\"${prop.name}\").\r\n")
-                            "LOGICAL" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetLogical(\"${prop.name}\").\r\n")
-                            else -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = oQueryParams:GetCharacter(\"${prop.name}\").\r\n")
+                            "INTEGER", "INT64" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = INTEGER(cVal_${prop.name}).\r\n")
+                            "DECIMAL" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = DECIMAL(cVal_${prop.name}).\r\n")
+                            "LOGICAL" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = LOGICAL(cVal_${prop.name}).\r\n")
+                            "DATETIME", "DATETIME-TZ" -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = DATETIME(cVal_${prop.name}).\r\n")
+                            else -> methodHandlersBlock.append("\t\t\toReq:${prop.name} = cVal_${prop.name}.\r\n")
                         }
                         methodHandlersBlock.append("\t\tEND.\r\n")
                         if (prop.isRequired) {
                             methodHandlersBlock.append("\t\tELSE DO:\r\n")
-                            methodHandlersBlock.append("\t\t\t\tTatara.Api.ResponseWriter:WriteError(oResponse, 400, \"Missing required body parameter: ${prop.name}\").\r\n")
+                            methodHandlersBlock.append("\t\t\tTatara.Api.ResponseWriter:WriteError(oResponse, 400, \"Missing required query parameter: ${prop.name}\").\r\n")
                             methodHandlersBlock.append("\t\t\tRETURN 0.\r\n")
                             methodHandlersBlock.append("\t\tEND.\r\n")
                         }

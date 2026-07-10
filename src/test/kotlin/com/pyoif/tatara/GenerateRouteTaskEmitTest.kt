@@ -339,4 +339,109 @@ class GenerateRouteTaskEmitTest {
         assertTrue(shim.contains("oJson:Add(\"addrs\", oArr_addrs)."),
             "shim should attach array under prop name")
     }
+
+    @Test
+    fun `emits INDEX-based query extraction per field without intermediate JsonObject`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    DEFINE PUBLIC PROPERTY name  AS CHARACTER.
+                    DEFINE PUBLIC PROPERTY count AS INTEGER.
+            """.trimIndent())
+        }
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC VOID ListOrders(INPUT poReq AS com.example.Order):
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/orders",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/orders",
+                httpMethod = "GET",
+                className = "com.example.OrderController",
+                ablMethod = "ListOrders",
+                requestDtoClassName = "com.example.Order"
+            )
+        )
+
+        // No intermediate JsonObject
+        assertFalse(shim.contains("oQueryParams"),
+            "shim should not declare oQueryParams JsonObject. SHIM:\n$shim")
+        // Per-field INDEX-based extraction
+        assertTrue(shim.contains("""iStart_name = INDEX(cQuery, "name=")"""),
+            "shim should compute iStart_name via INDEX. SHIM:\n$shim")
+        assertTrue(shim.contains("""iStart_count = INDEX(cQuery, "count=")"""),
+            "shim should compute iStart_count via INDEX. SHIM:\n$shim")
+        // Per-field SUBSTRING with & delimiter
+        assertTrue(shim.contains("""iAmp_name = INDEX(cQuery, "&", iStart_name)"""),
+            "shim should look for next & after iStart_name. SHIM:\n$shim")
+        assertTrue(shim.contains("""SUBSTRING(cQuery, iStart_name, iAmp_name - iStart_name)"""),
+            "shim should SUBSTRING between = and &. SHIM:\n$shim")
+        // Type casts
+        assertTrue(shim.contains("oReq:name = cVal_name."),
+            "shim should assign CHARACTER directly. SHIM:\n$shim")
+        assertTrue(shim.contains("oReq:count = INTEGER(cVal_count)."),
+            "shim should cast INTEGER via INTEGER(). SHIM:\n$shim")
+        // URI:Decode preserved
+        assertTrue(shim.contains("OpenEdge.Net.URI:Decode(SUBSTRING"),
+            "shim should URL-decode the extracted value. SHIM:\n$shim")
+    }
+
+    @Test
+    fun `emits 400 error for missing required query parameter`(@TempDir tmp: Path) {
+        val src = tmp.resolve("src").toFile()
+        File(src, "com/example/Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.Order:
+                    // @Required
+                    DEFINE PUBLIC PROPERTY name AS CHARACTER.
+            """.trimIndent())
+        }
+        File(src, "com/example/OrderController.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderController:
+                    // @GET("/svc/orders")
+                    METHOD PUBLIC VOID ListOrders(INPUT poReq AS com.example.Order):
+                        DEFINE VARIABLE ctrl0 AS com.example.OrderController NO-UNDO.
+                        ctrl0 = NEW com.example.OrderController().
+                    END METHOD.
+            """.trimIndent())
+        }
+
+        val genDir = tmp.resolve("gen").toFile()
+        val task = ShimEmitHelper.createTask()
+        val shim = ShimEmitHelper.invokeWriteShim(
+            task = task,
+            srcDir = src,
+            genDir = genDir,
+            routePath = "svc/orders",
+            routeDef = com.pyoif.tatara.GenerateRoutesTask.RouteDef(
+                routePath = "svc/orders",
+                httpMethod = "GET",
+                className = "com.example.OrderController",
+                ablMethod = "ListOrders",
+                requestDtoClassName = "com.example.Order"
+            )
+        )
+
+        assertTrue(shim.contains("Missing required query parameter: name"),
+            "shim should emit 400 for missing required query. SHIM:\n$shim")
+    }
 }
