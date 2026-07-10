@@ -402,12 +402,20 @@ class GenerateRouteTaskEmitTest {
     @Test
     fun `emits ReadDatasetAsArray for DATASET-HANDLE @Array prop`(@TempDir tmp: Path) {
         val src = tmp.resolve("src").toFile()
+        File(src, "com/example/OrderRepo.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS com.example.OrderRepo:
+                    DEFINE TEMP-TABLE ttOrder NO-UNDO FIELD orderId AS INTEGER.
+                    DEFINE DATASET dsOrder FOR ttOrder.
+            """.trimIndent())
+        }
         File(src, "com/example/Order.cls").apply {
             parentFile.mkdirs()
             writeText("""
                 CLASS com.example.Order:
                     // @Array("com.example.OrderRepo:dsOrder")
-                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
             """.trimIndent())
         }
         File(src, "com/example/OrderController.cls").apply {
@@ -440,7 +448,7 @@ class GenerateRouteTaskEmitTest {
         )
 
         assertTrue(shim.contains("Tatara.Api.DtoSerializer:ReadDatasetAsArray(oResult:data)"),
-            "shim should call ReadDatasetAsArray for DATASET-HANDLE @Array. SHIM:\n$shim")
+            "shim should call ReadDatasetAsArray when annotation points to DEFINE DATASET. SHIM:\n$shim")
     }
 
     @Test

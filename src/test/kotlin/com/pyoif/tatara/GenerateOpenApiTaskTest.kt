@@ -949,7 +949,7 @@ class GenerateOpenApiTaskTest {
             writeText("""
                 CLASS OrderResponse:
                     // @Array("repositories.project.OrderRepository:dsOrder")
-                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
                     DEFINE PUBLIC PROPERTY success AS LOGICAL.
             """.trimIndent())
         }
@@ -1001,7 +1001,7 @@ class GenerateOpenApiTaskTest {
             writeText("""
                 CLASS OrderResponse:
                     // @Object("repositories.project.OrderRepository:dsOrder")
-                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
             """.trimIndent())
         }
         File(src, "OrderResponseController.cls").apply {
@@ -1049,7 +1049,7 @@ class GenerateOpenApiTaskTest {
             writeText("""
                 CLASS OrderResponse:
                     // @Array("repositories.project.OrderRepository:dsOrder")
-                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
             """.trimIndent())
         }
         File(src, "OrderResponseController.cls").apply {
@@ -1083,7 +1083,7 @@ class GenerateOpenApiTaskTest {
             writeText("""
                 CLASS OrderResponse:
                     // @Array("repositories.project.Missing:dsX")
-                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
             """.trimIndent())
         }
         File(src, "OrderResponseController.cls").apply {

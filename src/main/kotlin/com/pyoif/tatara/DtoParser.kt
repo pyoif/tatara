@@ -141,6 +141,10 @@ object DtoParser {
                     }
                 }
 
+                val isDataset = if (isTempTable && currentTempTableClass != null && currentTempTableName != null) {
+                    parseDataset(currentTempTableClass!!, srcRoot, currentTempTableName!!) != null
+                } else false
+
                 properties.add(DtoProperty(
                     name = name,
                     ablType = ablType,
@@ -154,7 +158,7 @@ object DtoParser {
                     tempTableKind = tempTableKind,
                     tempTableClass = currentTempTableClass,
                     tempTableName = currentTempTableName,
-                    isDataset = ablType.uppercase() == "DATASET-HANDLE"
+                    isDataset = isDataset
                 ))
                 // Reset @Required and @TempTable kind — location sticks until next @Path/@Query/@Body
                 isReq = false

@@ -185,9 +185,11 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         val requiredArr = JsonArray()
         dto.properties.forEach { p ->
             if (p.isTempTable) {
-                // Dispatch to dataset builder when this is a DATASET-HANDLE property
+                // Parser pre-determined whether this points to a DATASET or a TEMP-TABLE.
                 if (p.isDataset) {
-                    val propSchema = buildDatasetSchema(p, dtoClass, pkgRoot)
+                    val srcClass = p.tempTableClass!!
+                    val ds = DtoParser.parseDataset(srcClass, pkgRoot, p.tempTableName!!)!!
+                    val propSchema = buildDatasetSchemaFromInfo(p, ds, srcClass, pkgRoot)
                     innerProps.add(p.name, propSchema)
                     if (p.isRequired) requiredArr.add(p.name)
                     return@forEach
@@ -259,36 +261,15 @@ abstract class GenerateOpenApiTask : DefaultTask() {
         schemas.add(nameOnly, schema)
     }
 
-    private fun buildDatasetSchema(
+    private fun buildDatasetSchemaFromInfo(
         prop: DtoParser.DtoProperty,
-        dtoClass: String,
+        dataset: DtoParser.DatasetInfo,
+        srcClass: String,
         pkgRoot: File
     ): JsonObject {
-        // For DATASET-HANDLE, the dataset reference is "Class:datasetName".
-        // The parser already split on `:` into tempTableClass and tempTableName;
-        // reassemble here.
-        val raw = if (prop.tempTableClass != null && prop.tempTableName != null)
-            "${prop.tempTableClass}:${prop.tempTableName}"
-        else prop.tempTableClass
-        if (raw == null) {
-            return datasetFallback(prop)
-        }
-        val colon = raw.indexOf(':')
-        if (colon < 0) {
-            logger.warn("Dataset annotation for '${prop.name}' on '$dtoClass' missing ':' (got '$raw'); falling back to generic.")
-            return datasetFallback(prop)
-        }
-        val srcClass = raw.substring(0, colon)
-        val datasetName = raw.substring(colon + 1)
-
-        val dataset = DtoParser.parseDataset(srcClass, pkgRoot, datasetName)
-        if (dataset == null) {
-            logger.warn("Dataset '$datasetName' not found in class '$srcClass' (prop '${prop.name}' on '$dtoClass'); falling back to generic.")
-            return datasetFallback(prop)
-        }
         val parentResult = DtoParser.parseInlineTempTableRaw(srcClass, pkgRoot, dataset.parentTable)
         if (parentResult == null) {
-            logger.warn("Parent TT '${dataset.parentTable}' not found in class '$srcClass' (prop '${prop.name}' on '$dtoClass'); falling back to generic.")
+            logger.warn("Parent TT '${dataset.parentTable}' not found in class '$srcClass' (prop '${prop.name}'); falling back to generic.")
             return datasetFallback(prop)
         }
         val (parentTt, _) = parentResult

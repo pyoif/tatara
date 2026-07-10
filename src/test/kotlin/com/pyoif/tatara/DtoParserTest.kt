@@ -535,17 +535,42 @@ class DtoParserTest {
     }
 
     @Test
-    fun `parses DATASET-HANDLE property type`(@TempDir tmp: Path) {
+    fun `isDataset is false when no annotation or class has no DEFINE DATASET`(@TempDir tmp: Path) {
         val src = tmp.toFile()
         File(src, "com/example/Order.cls").apply {
             parentFile.mkdirs()
             writeText("""
                 CLASS com.example.Order:
-                    DEFINE PUBLIC PROPERTY data AS DATASET-HANDLE.
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
             """.trimIndent())
         }
         val info = DtoParser.parse("com.example.Order", src)
         val prop = info.properties[0]
+        assertFalse(prop.isDataset)
+    }
+
+    @Test
+    fun `isDataset is true when class has DEFINE DATASET matching annotation`(@TempDir tmp: Path) {
+        val src = tmp.toFile()
+        File(src, "repositories/project/OrderRepository.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS repositories.project.OrderRepository:
+                    DEFINE TEMP-TABLE ttOrder NO-UNDO FIELD orderId AS INTEGER.
+                    DEFINE DATASET dsOrder FOR ttOrder.
+            """.trimIndent())
+        }
+        File(src, "Order.cls").apply {
+            parentFile.mkdirs()
+            writeText("""
+                CLASS Order:
+                    // @Object("repositories.project.OrderRepository:dsOrder")
+                    DEFINE PUBLIC PROPERTY data AS HANDLE.
+            """.trimIndent())
+        }
+        val info = DtoParser.parse("Order", src)
+        val prop = info.properties[0]
+        assertTrue(prop.isTempTable)
         assertTrue(prop.isDataset)
     }
 
