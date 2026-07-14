@@ -54,7 +54,7 @@ CLASS Tatara.Api.DtoSerializer:
         oTmpObj = NEW JsonObject().
 
         /* Stream dataset natively, omitting the Dataset wrapper name */
-        phDataset:WRITE-JSON("JsonObject", oTmpObj, FALSE, TRUE).
+        phDataset:WRITE-JSON("JsonObject", oTmpObj, FALSE, ?, FALSE, TRUE).
 
         /* Extract the single parent record out of its outer table array wrapper */
         IF oTmpObj:Has(cTopTable) THEN DO:
@@ -93,7 +93,7 @@ CLASS Tatara.Api.DtoSerializer:
         oTmpObj = NEW JsonObject().
 
         /* Stream the dataset structure natively */
-        phDataset:WRITE-JSON("JsonObject", oTmpObj, FALSE, TRUE).
+        phDataset:WRITE-JSON("JsonObject", oTmpObj, FALSE, ?, FALSE, TRUE).
 
         /* Pull the clean root array directly out of the JSON temporary envelope */
         IF oTmpObj:Has(cTopTable) THEN
